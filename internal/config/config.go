@@ -86,6 +86,18 @@ type Config struct {
 	// DatabaseMaxConnIdleTime is the pgx pool MaxConnIdleTime. Zero
 	// means use the driver default (DATABASE_MAX_CONN_IDLE_TIME).
 	DatabaseMaxConnIdleTime time.Duration
+	// DatabaseConnectAttempts is how many times the store tries to reach
+	// Postgres at startup, the first attempt included
+	// (DATABASE_CONNECT_ATTEMPTS). A managed database that is being
+	// restarted refuses connections for tens of seconds, and a process
+	// that gives up on the first refusal turns that pause into an
+	// outage. Zero means the store's default.
+	DatabaseConnectAttempts int
+	// DatabaseConnectDelay is the base delay between those attempts; it
+	// doubles after every failure, with jitter, so a fleet of instances
+	// does not retry in lockstep (DATABASE_CONNECT_DELAY). Zero means the
+	// store's default.
+	DatabaseConnectDelay time.Duration
 	// ReplicaDatabaseURL is a second Postgres connection string serving the
 	// read-only queries the store routes (REPLICA_DATABASE_URL). Empty means
 	// no replica: every read stays on DatabaseURL, which is how every
@@ -285,21 +297,73 @@ type GraphQLConfig struct {
 // The endpoint itself is always available; this controls the playground only.
 func (g GraphQLConfig) PlaygroundEnabled() bool { return g.EnablePlayground }
 
+// Problem is one configuration problem: the setting it was found in and what
+// is wrong with it. The field is the environment variable (or the block of
+// settings) an operator has to look at, so a report can be acted on without
+// reading the message.
+type Problem struct {
+	Field  string `json:"field"`
+	Reason string `json:"reason"`
+}
+
+// Error makes a Problem usable as an error, so the first one can be returned
+// where an error is expected.
+func (p Problem) Error() string { return p.Reason }
+
+// problemList collects the problems found while loading configuration. The
+// order is the order the checks ran in, so the first problem is the one a
+// single-error caller has always seen.
+type problemList struct {
+	list []Problem
+}
+
+// add records one problem. A nil error is ignored, so a caller can pass the
+// result of a check straight through.
+func (p *problemList) add(field string, err error) {
+	if err == nil {
+		return
+	}
+	p.list = append(p.list, Problem{Field: field, Reason: err.Error()})
+}
+
 // Load reads configuration from the environment and, optionally, a YAML file
 // pointed to by CONFIG_FILE. Environment values win over the file, and the file
 // wins over defaults so a checked-in config stays sane while emergency
 // overrides still work.
+//
+// Load reports the first problem it finds and stops there, which is what a
+// process that is about to exit wants. LoadProblems is the same code path
+// with the other half of the story: it collects every problem, so an
+// operator fixing a broken configuration sees all of it at once.
 func Load() (Config, error) {
+	cfg, problems := LoadProblems()
+	if len(problems) > 0 {
+		return cfg, problems[0]
+	}
+	return cfg, nil
+}
+
+// LoadProblems loads the configuration and reports every problem it finds.
+// It is the same checks, in the same order, as Load — a validator that
+// disagreed with startup would be worse than no validator at all — but it
+// does not stop at the first one: four typos in four variables cost four
+// runs to find otherwise.
+//
+// A configuration that cannot be read at all (an unreadable config file, a
+// network list that does not parse) has no usable configuration to report
+// against, so those are returned as the only problem.
+func LoadProblems() (Config, []Problem) {
+	var ps problemList
 	fileValues, err := loadFileValues()
 	if err != nil {
-		return Config{}, err
+		return Config{}, []Problem{{Field: "CONFIG_FILE", Reason: err.Error()}}
 	}
 
 	nets, err := ParseNetworks(func(key string) string {
 		return lookupConfigValue(key, fileValues)
 	})
 	if err != nil {
-		return Config{}, err
+		return Config{}, []Problem{{Field: "NETWORK", Reason: err.Error()}}
 	}
 	// The primary network is the list's first entry. With NETWORKS unset that
 	// entry is exactly what ParseNetwork resolves from NETWORK, so every
@@ -328,7 +392,7 @@ func Load() (Config, error) {
 	}
 
 	if err := validateDatabaseURL(cfg.DatabaseURL); err != nil {
-		return cfg, err
+		ps.add("DATABASE_URL", err)
 	}
 	// The pool knobs below are Postgres-only. Knowing the backend here lets
 	// Load fail loudly when a SQLite deployment carries them instead of
@@ -336,7 +400,7 @@ func Load() (Config, error) {
 	sqliteBackend := isSQLiteURL(cfg.DatabaseURL)
 
 	if err := validateHTTPAddr(cfg.HTTPAddr); err != nil {
-		return cfg, err
+		ps.add("HTTP_ADDR", err)
 	}
 
 	// An absolute http(s) RPC URL is required whenever one is in play —
@@ -345,42 +409,43 @@ func Load() (Config, error) {
 	// set, so this covers both spellings; ParseRPCURLs validates the rest of
 	// the list (and each entry's own message names it).
 	if cfg.RPCURL != "" && !validRPCURL(cfg.RPCURL) {
-		return cfg, fmt.Errorf(
+		ps.add("RPC_URL", fmt.Errorf(
 			"invalid RPC_URL %q: must be an absolute http or https URL",
 			cfg.RPCURL,
-		)
+		))
 	}
 
 	cfg.SourceMode = valueOrFallback("SOURCE_MODE", fileValues, "rpc")
 	if cfg.SourceMode != "rpc" && cfg.SourceMode != "sorotrail" && cfg.SourceMode != "horizon" {
-		return cfg, fmt.Errorf("invalid SOURCE_MODE %q (want rpc|sorotrail|horizon)", cfg.SourceMode)
+		ps.add("SOURCE_MODE", fmt.Errorf("invalid SOURCE_MODE %q (want rpc|sorotrail|horizon)", cfg.SourceMode))
 	}
 	cfg.SoroTrailURL = lookupConfigValue("SOROTRAIL_URL", fileValues)
 	if cfg.SourceMode == "sorotrail" && cfg.SoroTrailURL == "" {
-		return cfg, fmt.Errorf("SOROTRAIL_URL is required when SOURCE_MODE=sorotrail")
+		ps.add("SOROTRAIL_URL", fmt.Errorf("SOROTRAIL_URL is required when SOURCE_MODE=sorotrail"))
 	}
 	cfg.HorizonURL = lookupConfigValue("HORIZON_URL", fileValues)
 	if cfg.SourceMode == "horizon" && cfg.HorizonURL == "" {
-		return cfg, fmt.Errorf("HORIZON_URL is required when SOURCE_MODE=horizon")
+		ps.add("HORIZON_URL", fmt.Errorf("HORIZON_URL is required when SOURCE_MODE=horizon"))
 	}
 	// The upstream source is one SoroTrail deployment reading one chain: it has
 	// no per-network request to make, so a second entry in NETWORKS would be
 	// polled by nobody. Fail here instead of starting a supervisor whose
 	// testnet unit never advances.
 	if cfg.SourceMode == "sorotrail" && len(cfg.Networks) > 1 {
-		return cfg, fmt.Errorf("NETWORKS=%s lists %d chains but SOURCE_MODE=sorotrail reads events from a single upstream deployment; use SOURCE_MODE=rpc to poll several networks",
-			strings.Join(NetworkNames(cfg.Networks), ","), len(cfg.Networks))
+		ps.add("NETWORKS", fmt.Errorf("NETWORKS=%s lists %d chains but SOURCE_MODE=sorotrail reads events from a single upstream deployment; use SOURCE_MODE=rpc to poll several networks",
+			strings.Join(NetworkNames(cfg.Networks), ","), len(cfg.Networks)))
 	}
 
 	if v := lookupConfigValue("POLL_INTERVAL", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
-		if err != nil {
-			return cfg, fmt.Errorf("invalid POLL_INTERVAL %q: %w", v, err)
+		switch {
+		case err != nil:
+			ps.add("POLL_INTERVAL", fmt.Errorf("invalid POLL_INTERVAL %q: %w", v, err))
+		case d < time.Second:
+			ps.add("POLL_INTERVAL", fmt.Errorf("POLL_INTERVAL %q is below the 1s minimum", v))
+		default:
+			cfg.PollInterval = d
 		}
-		if d < time.Second {
-			return cfg, fmt.Errorf("POLL_INTERVAL %q is below the 1s minimum", v)
-		}
-		cfg.PollInterval = d
 	}
 
 	if v := lookupConfigValue("CORS_ALLOWED_ORIGINS", fileValues); v != "" {
@@ -393,13 +458,13 @@ func Load() (Config, error) {
 
 	tokens, err := parseAPITokens(lookupConfigValue("API_TOKEN", fileValues))
 	if err != nil {
-		return cfg, err
+		ps.add("API_TOKEN", err)
 	}
 	cfg.APITokens = tokens
 
 	bound, err := parseWorkspaceTokens(lookupConfigValue("WORKSPACE_TOKENS", fileValues))
 	if err != nil {
-		return cfg, err
+		ps.add("WORKSPACE_TOKENS", err)
 	}
 	cfg.WorkspaceTokens = bound
 	// A token that names two workspaces is rejected at startup, not at the
@@ -407,53 +472,58 @@ func Load() (Config, error) {
 	// entry the comparison happened to hit, which is the one failure mode
 	// tenancy cannot have.
 	if err := checkTokenWorkspaces(cfg.APITokens, cfg.WorkspaceTokens); err != nil {
-		return cfg, err
+		ps.add("WORKSPACE_TOKENS", err)
 	}
 
 	oidc, err := parseOIDC(func(key string) string {
 		return lookupConfigValue(key, fileValues)
 	})
 	if err != nil {
-		return cfg, err
+		ps.add("OIDC_ISSUER", err)
 	}
 	cfg.OIDC = oidc
 
 	if v := lookupConfigValue("HTTP_MAX_BODY_BYTES", fileValues); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n <= 0 {
-			return cfg, fmt.Errorf("invalid HTTP_MAX_BODY_BYTES %q: must be a positive integer (bytes)", v)
+			ps.add("HTTP_MAX_BODY_BYTES", fmt.Errorf("invalid HTTP_MAX_BODY_BYTES %q: must be a positive integer (bytes)", v))
+		} else {
+			cfg.HTTPMaxBodyBytes = n
 		}
-		cfg.HTTPMaxBodyBytes = n
 	}
 
 	if v := lookupConfigValue("LOG_LEVEL", fileValues); v != "" {
 		lvl, err := parseLevel(v)
 		if err != nil {
-			return cfg, err
+			ps.add("LOG_LEVEL", err)
+		} else {
+			cfg.LogLevel = lvl
 		}
-		cfg.LogLevel = lvl
 	}
 
 	if v := lookupConfigValue("READYZ_LAG_THRESHOLD", fileValues); v != "" {
 		n, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
-			return cfg, fmt.Errorf("invalid READYZ_LAG_THRESHOLD %q: %w", v, err)
+			ps.add("READYZ_LAG_THRESHOLD", fmt.Errorf("invalid READYZ_LAG_THRESHOLD %q: %w", v, err))
+		} else {
+			cfg.ReadyzLagThreshold = uint32(n)
 		}
-		cfg.ReadyzLagThreshold = uint32(n)
 	}
 	if v := lookupConfigValue("RATE_LIMIT_RPS", fileValues); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)
 		if err != nil || rps < 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
-			return cfg, fmt.Errorf("invalid RATE_LIMIT_RPS %q (want a non-negative number)", v)
+			ps.add("RATE_LIMIT_RPS", fmt.Errorf("invalid RATE_LIMIT_RPS %q (want a non-negative number)", v))
+		} else {
+			cfg.RateLimitRPS = rps
 		}
-		cfg.RateLimitRPS = rps
 	}
 	if v := lookupConfigValue("RATE_LIMIT_BURST", fileValues); v != "" {
 		burst, err := strconv.Atoi(v)
 		if err != nil || burst < 0 {
-			return cfg, fmt.Errorf("invalid RATE_LIMIT_BURST %q (want a non-negative integer)", v)
+			ps.add("RATE_LIMIT_BURST", fmt.Errorf("invalid RATE_LIMIT_BURST %q (want a non-negative integer)", v))
+		} else {
+			cfg.RateLimitBurst = burst
 		}
-		cfg.RateLimitBurst = burst
 	}
 	if cfg.RateLimitRPS > 0 && cfg.RateLimitBurst == 0 {
 		cfg.RateLimitBurst = int(math.Ceil(cfg.RateLimitRPS))
@@ -464,20 +534,22 @@ func Load() (Config, error) {
 	if v := lookupConfigValue("CHANNEL_DISABLE_AFTER_FAILURES", fileValues); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			return cfg, fmt.Errorf("invalid CHANNEL_DISABLE_AFTER_FAILURES %q (want a non-negative integer)", v)
+			ps.add("CHANNEL_DISABLE_AFTER_FAILURES", fmt.Errorf("invalid CHANNEL_DISABLE_AFTER_FAILURES %q (want a non-negative integer)", v))
+		} else {
+			cfg.ChannelDisableAfterFailures = n
 		}
-		cfg.ChannelDisableAfterFailures = n
 	}
 
 	if v := lookupConfigValue("MONITOR_SILENT_AFTER", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
-		if err != nil {
-			return cfg, fmt.Errorf("invalid MONITOR_SILENT_AFTER %q: %w", v, err)
+		switch {
+		case err != nil:
+			ps.add("MONITOR_SILENT_AFTER", fmt.Errorf("invalid MONITOR_SILENT_AFTER %q: %w", v, err))
+		case d <= 0:
+			ps.add("MONITOR_SILENT_AFTER", fmt.Errorf("MONITOR_SILENT_AFTER %q must be greater than 0", v))
+		default:
+			cfg.MonitorSilentAfter = d
 		}
-		if d <= 0 {
-			return cfg, fmt.Errorf("MONITOR_SILENT_AFTER %q must be greater than 0", v)
-		}
-		cfg.MonitorSilentAfter = d
 	}
 
 	if v := lookupConfigValue("RATE_LIMIT_TRUST_FORWARDED", fileValues); v != "" {
@@ -487,35 +559,63 @@ func Load() (Config, error) {
 		case "0", "false", "no", "off":
 			cfg.RateLimitTrustForwarded = false
 		default:
-			return cfg, fmt.Errorf("invalid RATE_LIMIT_TRUST_FORWARDED %q (want true|false)", v)
+			ps.add("RATE_LIMIT_TRUST_FORWARDED", fmt.Errorf("invalid RATE_LIMIT_TRUST_FORWARDED %q (want true|false)", v))
 		}
 	}
 	maxConns, err := parseInt32EnvWithFile("DATABASE_MAX_CONNS", fileValues)
 	if err != nil {
-		return cfg, err
+		ps.add("DATABASE_MAX_CONNS", err)
 	}
 	minConns, err := parseInt32EnvWithFile("DATABASE_MIN_CONNS", fileValues)
 	if err != nil {
-		return cfg, err
+		ps.add("DATABASE_MIN_CONNS", err)
 	}
 	maxLifetime, err := parseDurationEnvWithFile("DATABASE_MAX_CONN_LIFETIME", fileValues)
 	if err != nil {
-		return cfg, err
+		ps.add("DATABASE_MAX_CONN_LIFETIME", err)
 	}
 	maxIdle, err := parseDurationEnvWithFile("DATABASE_MAX_CONN_IDLE_TIME", fileValues)
 	if err != nil {
-		return cfg, err
+		ps.add("DATABASE_MAX_CONN_IDLE_TIME", err)
 	}
 	if maxConns > 0 && minConns > 0 && maxConns < minConns {
-		return cfg, fmt.Errorf("DATABASE_MAX_CONNS %d is below DATABASE_MIN_CONNS %d", maxConns, minConns)
+		ps.add("DATABASE_MAX_CONNS", fmt.Errorf("DATABASE_MAX_CONNS %d is below DATABASE_MIN_CONNS %d", maxConns, minConns))
 	}
 	if sqliteBackend && (maxConns > 0 || minConns > 0 || maxLifetime > 0 || maxIdle > 0) {
-		return cfg, fmt.Errorf("DATABASE_MAX_CONNS, DATABASE_MIN_CONNS, DATABASE_MAX_CONN_LIFETIME and DATABASE_MAX_CONN_IDLE_TIME tune the Postgres pool and have no effect on a sqlite DATABASE_URL; unset them or use Postgres")
+		ps.add("DATABASE_MAX_CONNS", fmt.Errorf("DATABASE_MAX_CONNS, DATABASE_MIN_CONNS, DATABASE_MAX_CONN_LIFETIME and DATABASE_MAX_CONN_IDLE_TIME tune the Postgres pool and have no effect on a sqlite DATABASE_URL; unset them or use Postgres"))
 	}
 	cfg.DatabaseMaxConns = maxConns
 	cfg.DatabaseMinConns = minConns
 	cfg.DatabaseMaxConnLifetime = maxLifetime
 	cfg.DatabaseMaxConnIdleTime = maxIdle
+
+	// The startup connection retry. It exists because a database that is
+	// mid-failover refuses connections for a while, and the pause is not
+	// the process's fault.
+	if v := lookupConfigValue("DATABASE_CONNECT_ATTEMPTS", fileValues); v != "" {
+		n, err := strconv.Atoi(v)
+		switch {
+		case err != nil:
+			ps.add("DATABASE_CONNECT_ATTEMPTS", fmt.Errorf("invalid DATABASE_CONNECT_ATTEMPTS %q (want a positive integer)", v))
+		case n < 1:
+			ps.add("DATABASE_CONNECT_ATTEMPTS", fmt.Errorf("DATABASE_CONNECT_ATTEMPTS %d must be at least 1", n))
+		case n > 100:
+			ps.add("DATABASE_CONNECT_ATTEMPTS", fmt.Errorf("DATABASE_CONNECT_ATTEMPTS %d is above the 100 maximum", n))
+		default:
+			cfg.DatabaseConnectAttempts = n
+		}
+	}
+	if v := lookupConfigValue("DATABASE_CONNECT_DELAY", fileValues); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil:
+			ps.add("DATABASE_CONNECT_DELAY", fmt.Errorf("invalid DATABASE_CONNECT_DELAY %q: %w", v, err))
+		case d <= 0:
+			ps.add("DATABASE_CONNECT_DELAY", fmt.Errorf("DATABASE_CONNECT_DELAY %q must be greater than 0", v))
+		default:
+			cfg.DatabaseConnectDelay = d
+		}
+	}
 
 	// Read-replica routing is Postgres-only and off unless asked for. Both
 	// failures below are startup errors rather than warnings: an operator who
@@ -523,54 +623,63 @@ func Load() (Config, error) {
 	// deployment that silently serves everything from the primary while
 	// claiming otherwise is worse than one that refuses to boot.
 	replicaURL := strings.TrimSpace(lookupConfigValue("REPLICA_DATABASE_URL", fileValues))
-	if sqliteBackend && replicaURL != "" {
-		return cfg, fmt.Errorf("REPLICA_DATABASE_URL has no effect on a sqlite DATABASE_URL: SQLite serves reads and writes from one file; unset it or use Postgres")
-	}
-	if replicaURL != "" {
+	switch {
+	case sqliteBackend && replicaURL != "":
+		ps.add("REPLICA_DATABASE_URL", fmt.Errorf("REPLICA_DATABASE_URL has no effect on a sqlite DATABASE_URL: SQLite serves reads and writes from one file; unset it or use Postgres"))
+	case replicaURL != "":
 		if err := validateReplicaDatabaseURL(replicaURL, cfg.DatabaseURL); err != nil {
-			return cfg, err
+			ps.add("REPLICA_DATABASE_URL", err)
+		} else {
+			cfg.ReplicaDatabaseURL = replicaURL
 		}
+	default:
+		cfg.ReplicaDatabaseURL = replicaURL
 	}
-	cfg.ReplicaDatabaseURL = replicaURL
 	key, err := parseEncryptionKey(lookupConfigValue("CONFIG_ENCRYPTION_KEY", fileValues))
 	if err != nil {
-		return cfg, err
+		ps.add("CONFIG_ENCRYPTION_KEY", err)
 	}
 	cfg.ConfigEncryptionKey = key
-	cfg.GRPCAddr = lookupConfigValue("GRPC_ADDR", fileValues)
-	if cfg.GRPCAddr != "" {
-		if err := validateHTTPAddr(cfg.GRPCAddr); err != nil {
-			return cfg, fmt.Errorf("invalid GRPC_ADDR: %w", err)
+	grpcAddr := lookupConfigValue("GRPC_ADDR", fileValues)
+	if grpcAddr != "" {
+		if err := validateHTTPAddr(grpcAddr); err != nil {
+			ps.add("GRPC_ADDR", fmt.Errorf("invalid GRPC_ADDR: %w", err))
+		} else {
+			cfg.GRPCAddr = grpcAddr
 		}
 	}
 
 	if v := lookupConfigValue("ALERT_RETENTION", fileValues); v != "" {
 		d, err := ParseRetention(v)
 		if err != nil {
-			return cfg, fmt.Errorf("invalid ALERT_RETENTION %q: %w", v, err)
+			ps.add("ALERT_RETENTION", fmt.Errorf("invalid ALERT_RETENTION %q: %w", v, err))
+		} else {
+			cfg.AlertRetention = d
 		}
-		cfg.AlertRetention = d
 	}
 	if v := lookupConfigValue("FLAPPING_EPISODES", fileValues); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
-			return cfg, fmt.Errorf("invalid FLAPPING_EPISODES %q: must be a positive integer", v)
+			ps.add("FLAPPING_EPISODES", fmt.Errorf("invalid FLAPPING_EPISODES %q: must be a positive integer", v))
+		} else {
+			cfg.FlappingEpisodes = n
 		}
-		cfg.FlappingEpisodes = n
 	}
 	if v := lookupConfigValue("FLAPPING_WINDOW", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			return cfg, fmt.Errorf("invalid FLAPPING_WINDOW %q: must be a positive duration", v)
+			ps.add("FLAPPING_WINDOW", fmt.Errorf("invalid FLAPPING_WINDOW %q: must be a positive duration", v))
+		} else {
+			cfg.FlappingWindow = d
 		}
-		cfg.FlappingWindow = d
 	}
 	if v := lookupConfigValue("FLAPPING_QUIET_AFTER", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			return cfg, fmt.Errorf("invalid FLAPPING_QUIET_AFTER %q: must be a positive duration", v)
+			ps.add("FLAPPING_QUIET_AFTER", fmt.Errorf("invalid FLAPPING_QUIET_AFTER %q: must be a positive duration", v))
+		} else {
+			cfg.FlappingQuietAfter = d
 		}
-		cfg.FlappingQuietAfter = d
 	}
 	cfg.AlertEnrichmentURL = strings.TrimSpace(lookupConfigValue("ALERT_ENRICHMENT_URL", fileValues))
 	cfg.AlertEnrichmentTimeout = 2 * time.Second
@@ -578,30 +687,34 @@ func Load() (Config, error) {
 	if v := lookupConfigValue("ALERT_ENRICHMENT_TIMEOUT", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			return cfg, fmt.Errorf("invalid ALERT_ENRICHMENT_TIMEOUT %q", v)
+			ps.add("ALERT_ENRICHMENT_TIMEOUT", fmt.Errorf("invalid ALERT_ENRICHMENT_TIMEOUT %q", v))
+		} else {
+			cfg.AlertEnrichmentTimeout = d
 		}
-		cfg.AlertEnrichmentTimeout = d
 	}
 	if v := lookupConfigValue("ALERT_ENRICHMENT_CACHE_TTL", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			return cfg, fmt.Errorf("invalid ALERT_ENRICHMENT_CACHE_TTL %q", v)
+			ps.add("ALERT_ENRICHMENT_CACHE_TTL", fmt.Errorf("invalid ALERT_ENRICHMENT_CACHE_TTL %q", v))
+		} else {
+			cfg.AlertEnrichmentCacheTTL = d
 		}
-		cfg.AlertEnrichmentCacheTTL = d
 	}
 	if v := lookupConfigValue("REORG_TRACKING_WINDOW", fileValues); v != "" {
 		n, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
-			return cfg, fmt.Errorf("invalid REORG_TRACKING_WINDOW %q: must be a non-negative integer", v)
+			ps.add("REORG_TRACKING_WINDOW", fmt.Errorf("invalid REORG_TRACKING_WINDOW %q: must be a non-negative integer", v))
+		} else {
+			cfg.ReorgTrackingWindow = uint32(n)
 		}
-		cfg.ReorgTrackingWindow = uint32(n)
 	}
 	if v := lookupConfigValue("REORG_CONFIRMATION_DEPTH", fileValues); v != "" {
 		n, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
-			return cfg, fmt.Errorf("invalid REORG_CONFIRMATION_DEPTH %q: must be a non-negative integer", v)
+			ps.add("REORG_CONFIRMATION_DEPTH", fmt.Errorf("invalid REORG_CONFIRMATION_DEPTH %q: must be a non-negative integer", v))
+		} else {
+			cfg.ReorgConfirmationDepth = uint32(n)
 		}
-		cfg.ReorgConfirmationDepth = uint32(n)
 	}
 	cfg.ArchiveURL = strings.TrimSpace(lookupConfigValue("ARCHIVE_URL", fileValues))
 
@@ -611,10 +724,13 @@ func Load() (Config, error) {
 		u, err := url.Parse(cfg.OTLP.Endpoint)
 		if err != nil || !u.IsAbs() || u.Host == "" ||
 			(u.Scheme != "http" && u.Scheme != "https") {
-			return cfg, fmt.Errorf(
+			ps.add("OTLP_ENDPOINT", fmt.Errorf(
 				"invalid OTLP_ENDPOINT %q: must be an absolute http or https URL",
 				cfg.OTLP.Endpoint,
-			)
+			))
+			// Leave the endpoint unset: a half-valid value would make
+			// the tracing setup try to export to it.
+			cfg.OTLP.Endpoint = ""
 		}
 	}
 	cfg.OTLP.ServiceName = lookupConfigValue("OTLP_SERVICE_NAME", fileValues)
@@ -622,9 +738,10 @@ func Load() (Config, error) {
 	if v := lookupConfigValue("OTLP_SAMPLE_RATE", fileValues); v != "" {
 		r, err := strconv.ParseFloat(v, 64)
 		if err != nil || r < 0 || r > 1 || math.IsNaN(r) || math.IsInf(r, 0) {
-			return cfg, fmt.Errorf("invalid OTLP_SAMPLE_RATE %q (want a number in [0, 1])", v)
+			ps.add("OTLP_SAMPLE_RATE", fmt.Errorf("invalid OTLP_SAMPLE_RATE %q (want a number in [0, 1])", v))
+		} else {
+			cfg.OTLP.SampleRate = r
 		}
-		cfg.OTLP.SampleRate = r
 	}
 	// GraphQL configuration. Read through lookupConfigValue like every other
 	// setting, so CONFIG_FILE can supply these too.
@@ -636,60 +753,66 @@ func Load() (Config, error) {
 		case "0", "false", "no", "off":
 			cfg.GraphQL.EnablePlayground = false
 		default:
-			return cfg, fmt.Errorf("invalid GRAPHQL_PLAYGROUND %q (want true|false)", v)
+			ps.add("GRAPHQL_PLAYGROUND", fmt.Errorf("invalid GRAPHQL_PLAYGROUND %q (want true|false)", v))
 		}
 	}
 	cfg.GraphQL.MaxDepth = DefaultGraphQLMaxDepth
 	if v := lookupConfigValue("GRAPHQL_MAX_DEPTH", fileValues); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 50 {
-			return cfg, fmt.Errorf("invalid GRAPHQL_MAX_DEPTH %q (want an integer between 1 and 50)", v)
+			ps.add("GRAPHQL_MAX_DEPTH", fmt.Errorf("invalid GRAPHQL_MAX_DEPTH %q (want an integer between 1 and 50)", v))
+		} else {
+			cfg.GraphQL.MaxDepth = n
 		}
-		cfg.GraphQL.MaxDepth = n
 	}
 	cfg.GraphQL.MaxComplexity = DefaultGraphQLMaxComplexity
 	if v := lookupConfigValue("GRAPHQL_MAX_COMPLEXITY", fileValues); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 10000 {
-			return cfg, fmt.Errorf("invalid GRAPHQL_MAX_COMPLEXITY %q (want an integer between 1 and 10000)", v)
+			ps.add("GRAPHQL_MAX_COMPLEXITY", fmt.Errorf("invalid GRAPHQL_MAX_COMPLEXITY %q (want an integer between 1 and 10000)", v))
+		} else {
+			cfg.GraphQL.MaxComplexity = n
 		}
-		cfg.GraphQL.MaxComplexity = n
 	}
 
 	if v := lookupConfigValue("NOTIFY_RATE_LIMIT_SLACK_RPS", fileValues); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)
 		if err != nil || rps < 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
-			return cfg, fmt.Errorf("invalid NOTIFY_RATE_LIMIT_SLACK_RPS %q (want a non-negative number)", v)
+			ps.add("NOTIFY_RATE_LIMIT_SLACK_RPS", fmt.Errorf("invalid NOTIFY_RATE_LIMIT_SLACK_RPS %q (want a non-negative number)", v))
+		} else {
+			cfg.NotifyRateLimitSlackRPS = rps
 		}
-		cfg.NotifyRateLimitSlackRPS = rps
 	}
 	if v := lookupConfigValue("NOTIFY_RATE_LIMIT_TELEGRAM_RPS", fileValues); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)
 		if err != nil || rps < 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
-			return cfg, fmt.Errorf("invalid NOTIFY_RATE_LIMIT_TELEGRAM_RPS %q (want a non-negative number)", v)
+			ps.add("NOTIFY_RATE_LIMIT_TELEGRAM_RPS", fmt.Errorf("invalid NOTIFY_RATE_LIMIT_TELEGRAM_RPS %q (want a non-negative number)", v))
+		} else {
+			cfg.NotifyRateLimitTelegramRPS = rps
 		}
-		cfg.NotifyRateLimitTelegramRPS = rps
 	}
 	if v := lookupConfigValue("NOTIFY_RATE_LIMIT_PAGERDUTY_RPS", fileValues); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)
 		if err != nil || rps < 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
-			return cfg, fmt.Errorf("invalid NOTIFY_RATE_LIMIT_PAGERDUTY_RPS %q (want a non-negative number)", v)
+			ps.add("NOTIFY_RATE_LIMIT_PAGERDUTY_RPS", fmt.Errorf("invalid NOTIFY_RATE_LIMIT_PAGERDUTY_RPS %q (want a non-negative number)", v))
+		} else {
+			cfg.NotifyRateLimitPagerDutyRPS = rps
 		}
-		cfg.NotifyRateLimitPagerDutyRPS = rps
 	}
 	if v := lookupConfigValue("NOTIFY_RATE_LIMIT_DEFAULT_RPS", fileValues); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)
 		if err != nil || rps < 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
-			return cfg, fmt.Errorf("invalid NOTIFY_RATE_LIMIT_DEFAULT_RPS %q (want a non-negative number)", v)
+			ps.add("NOTIFY_RATE_LIMIT_DEFAULT_RPS", fmt.Errorf("invalid NOTIFY_RATE_LIMIT_DEFAULT_RPS %q (want a non-negative number)", v))
+		} else {
+			cfg.NotifyRateLimitDefaultRPS = rps
 		}
-		cfg.NotifyRateLimitDefaultRPS = rps
 	}
 
 	if err := loadSecrets(&cfg, fileValues); err != nil {
-		return cfg, err
+		ps.add("SECRETS_PROVIDER", err)
 	}
 
-	return cfg, nil
+	return cfg, ps.list
 }
 
 // loadSecrets reads the external-secret provider configuration. The active

@@ -90,6 +90,7 @@ var routeRoles = auth.NewRouteTable(map[string]auth.Role{
 	"POST /alerts/{id}/deliveries/{channelID}/retry": auth.RoleEditor,
 	"POST /dead-letters/{id}/redrive":                auth.RoleEditor,
 	"POST /ingest":                                   auth.RoleEditor,
+	"POST /triggers":                                 auth.RoleEditor,
 	"POST /inhibitions":                              auth.RoleEditor,
 	"DELETE /inhibitions/{sourceID}/{targetID}":      auth.RoleEditor,
 	"POST /maintenance-windows":                      auth.RoleEditor,

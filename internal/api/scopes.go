@@ -94,6 +94,9 @@ var routeScopes = auth.NewRouteTable(map[string][]auth.Scope{
 	"GET /audit": {auth.ScopeMonitorsRead},
 	// Ingest writes alerts: it is the push counterpart of the poller.
 	"POST /ingest": {auth.ScopeAlertsWrite},
+	// A trigger asks the instance to evaluate an external event into an
+	// alert, so it writes alerts too.
+	"POST /triggers": {auth.ScopeAlertsWrite},
 	// Inhibitions and maintenance windows decide whether an alert is
 	// delivered, so they are alert writes rather than monitor edits.
 	"POST /inhibitions":                         {auth.ScopeAlertsWrite},

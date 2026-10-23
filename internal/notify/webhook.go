@@ -2,9 +2,6 @@ package notify
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -13,7 +10,7 @@ import (
 
 // SignatureHeader carries the hex HMAC-SHA256 of the canonical signing
 // string (timestamp + "." + raw body), keyed with the channel's current
-// secret. Receivers should recompute and compare.
+// active secret. Receivers should recompute and compare.
 const SignatureHeader = "X-SoroBeacon-Signature"
 
 // SignaturePreviousHeader carries the same signature computed under
@@ -70,30 +67,14 @@ func (w *Webhook) Send(ctx context.Context, a Alert) error {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	headers := map[string]string{
 		TimestampHeader: timestamp,
-		SignatureHeader: Sign(w.cfg.Secret, timestamp, body),
+		SignatureHeader: Sign([]byte(w.cfg.Secret), timestamp, body),
 	}
 	if w.cfg.PreviousSecret != "" {
-		headers[SignaturePreviousHeader] = Sign(w.cfg.PreviousSecret, timestamp, body)
+		headers[SignaturePreviousHeader] = Sign([]byte(w.cfg.PreviousSecret), timestamp, body)
 	}
 
 	if err := postJSON(ctx, w.cfg.URL, body, headers); err != nil {
 		return fmt.Errorf("webhook: %w", err)
 	}
 	return nil
-}
-
-// Sign returns the hex HMAC-SHA256 of the canonical signing string under
-// secret. The canonical string is the decimal Unix timestamp, a single "."
-// and then the raw request body, byte for byte:
-//
-//	<timestamp>.<body>
-//
-// Exported so receivers written in Go can verify payloads with the same
-// code the sender uses.
-func Sign(secret, timestamp string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("."))
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
 }

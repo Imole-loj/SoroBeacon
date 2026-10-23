@@ -229,6 +229,13 @@ database:
   # Go durations, e.g. 1h / 30m.
   maxConnLifetime: ""
   maxConnIdleTime: ""
+  # Startup connection retry. A managed database that is restarting or
+  # failing over refuses connections for a while; the store retries rather
+  # than turning that pause into an outage. connectAttempts counts the first
+  # try (1-100), and connectDelay is the base delay, doubled after every
+  # failure with jitter. Empty keeps the application defaults (5 and 2s).
+  connectAttempts: 5
+  connectDelay: "2s"
 
 # ── Credentials (Secret) ─────────────────────────────────────────────────────
 auth:

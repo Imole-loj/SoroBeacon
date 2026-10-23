@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -48,7 +49,14 @@ func AuditMiddleware(st store.Store, log *slog.Logger) func(http.Handler) http.H
 			// chi matches the route inside the handler chain, so the route
 			// pattern is only populated after next returns; the body must be
 			// read (and restored) before the handler consumes it.
-			fields := changedFields(r)
+			fields, bodyErr := changedFields(r)
+			if bodyErr != nil {
+				var maxErr *http.MaxBytesError
+				if errors.As(bodyErr, &maxErr) {
+					writeErr(w, r, http.StatusRequestEntityTooLarge, "request body too large")
+					return
+				}
+			}
 			rec := &auditRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rec, r)
 			spec, ok := auditRoute(r.Method, auditRoutePattern(r))
@@ -173,26 +181,29 @@ func idFromBody(body []byte) int64 {
 // request body. The values are dropped as soon as they are parsed: only the
 // fact that a field was present is stored, never its content. The body is
 // restored so the handler still sees it.
-func changedFields(r *http.Request) []string {
+func changedFields(r *http.Request) ([]string, error) {
 	if r.Body == nil {
-		return nil
+		return nil, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytesForAudit))
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err != nil || len(body) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, nil
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil
+		return nil, nil
 	}
 	out := make([]string, 0, len(fields))
 	for k := range fields {
 		out = append(out, k)
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // maxBodyBytesForAudit caps how much of a request body is read to learn its

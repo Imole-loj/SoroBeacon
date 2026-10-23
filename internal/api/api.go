@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -311,6 +312,9 @@ func (s *Server) Routes() chi.Router {
 
 	mux.Post("/monitors/import", s.importContracts)
 	mux.Post("/ingest", s.ingest)
+	// Trigger endpoint: accept external events and create alerts via rule
+	// evaluation.
+	mux.Post("/triggers", s.triggerHandler)
 
 	mux.Route("/tokens", func(r chi.Router) {
 		r.Post("/", s.createToken)
@@ -584,12 +588,17 @@ func constraintMessage(err error) string {
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeErr(w, r, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}
+		writeErr(w, r, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return false
+	}
+	if err := json.Unmarshal(data, v); err != nil {
 		writeErr(w, r, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}

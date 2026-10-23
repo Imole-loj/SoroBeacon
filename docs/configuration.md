@@ -17,6 +17,40 @@ returned by the API, or pasted into a ticket.
 authoritative source. If this page and the code disagree, the code wins
 and this page should be updated.
 
+## Checking a configuration before deploying
+
+`config.Load` runs at startup, so a typo in a variable is found when the
+process starts — in a deployment pipeline, after the old version has already
+been stopped. `sorobeacon validate` runs the same checks without starting
+anything:
+
+```sh
+sorobeacon validate                      # syntax only, no network
+sorobeacon validate --connectivity       # also reach the database and the RPC
+sorobeacon validate --json               # machine-readable
+```
+
+Every problem is reported in one run, not just the first, so an operator
+fixing four typos does not need four runs. The exit code tells a pipeline
+which kind of problem it is:
+
+| Exit code | Meaning | Fixed by |
+| --- | --- | --- |
+| `0` | the configuration is valid | — |
+| `1` | the configuration is invalid | editing the environment or the config file |
+| `2` | a dependency named by the configuration could not be reached | waiting for the database, or fixing the network |
+
+The connectivity checks are opt-in because they make the command slow and
+network-dependent: a configuration that names a database on another host
+cannot be checked from a machine that cannot route to it. When they run,
+they also report the database's migration version (a database behind the
+binary's migrations is reported as a problem, not silently accepted) and
+whether the RPC endpoint serves the configured network.
+
+No secret is ever printed: not the database password, not an API token, not
+the config encryption key. Values are redacted on the way out, in every
+output mode.
+
 ## Secrets
 
 | Variable | Secret? | Notes |

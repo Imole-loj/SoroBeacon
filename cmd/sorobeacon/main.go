@@ -85,6 +85,12 @@ func main() {
 			}
 			return
 		}
+		// `sorobeacon validate` checks the configuration and exits with a
+		// code a deployment pipeline can branch on, so it is dispatched
+		// before the client: it talks to no instance and starts no server.
+		if ok, rest := validateRequested(args); ok {
+			os.Exit(runValidate(context.Background(), rest, os.Stdout))
+		}
 		if err := runCLI(context.Background(), args, os.Stdout); err != nil {
 			reportCLIError(os.Stderr, err)
 			os.Exit(1)
@@ -306,6 +312,12 @@ func newServer(ctx context.Context, cfg config.Config, log *slog.Logger, deps st
 		MaxConnIdleTime: cfg.DatabaseMaxConnIdleTime,
 		ReplicaURL:      cfg.ReplicaDatabaseURL,
 		Metrics:         m,
+		// The connection retry is bounded and jittered: a database that is
+		// mid-failover refuses connections for a while, and that pause must
+		// not become a crash loop.
+		Log:             log,
+		ConnectAttempts: cfg.DatabaseConnectAttempts,
+		ConnectDelay:    cfg.DatabaseConnectDelay,
 	}, configCipher)
 	if err != nil {
 		shutdownTelemetry(log, tel)

@@ -98,7 +98,7 @@ func (s *Supervisor) runUnit(ctx context.Context, u Unit) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(u.Poller.interval):
+		case <-time.After(u.Poller.Interval()):
 		}
 	}
 }

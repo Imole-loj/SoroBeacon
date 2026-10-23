@@ -36,27 +36,35 @@ func TestDependabotConfig(t *testing.T) {
 	require.Regexp(t, `(?m)^version:\s*2\s*$`, text)
 
 	updates := splitUpdates(text)
-	require.Len(t, updates, 3, "want gomod, github-actions and docker ecosystems")
+	// Root gomod, terraform-provider gomod, github-actions, and docker: the Terraform provider is a
+	// nested module, and a gomod entry for "/" does not reach it.
+	require.Len(t, updates, 4, "want gomod (root), gomod (terraform provider), github-actions and docker")
 
-	gomod := findUpdate(t, updates, "gomod")
+	gomodRoot := updates[0]
+	gomodTF := updates[1]
 	actions := findUpdate(t, updates, "github-actions")
 	docker := findUpdate(t, updates, "docker")
 
-	assertWeeklyRoot(t, gomod)
+	assertWeeklyRoot(t, gomodRoot)
+	assertWeeklyRoot(t, gomodTF)
 	assertWeeklyRoot(t, actions)
 	assertWeeklyRoot(t, docker)
 
-	require.Contains(t, gomod, "go-minor-and-patch", "minor/patch Go bumps should be grouped")
-	require.Contains(t, gomod, "minor")
-	require.Contains(t, gomod, "patch")
-	require.NotContains(t, gomod, "major", "major Go updates must stay ungrouped")
+	require.Contains(t, gomodRoot, "go-minor-and-patch", "minor/patch Go bumps should be grouped")
+	require.Contains(t, gomodRoot, "minor")
+	require.Contains(t, gomodRoot, "patch")
+	require.NotContains(t, gomodRoot, "major", "major Go updates must stay ungrouped")
 	require.NotContains(t, actions, "go-minor-and-patch")
+
 }
 
 func TestDependabotConfigFailsIfEcosystemDropped(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "dependabot.yml"))
 	require.NoError(t, err)
-	broken := strings.Replace(string(raw), "package-ecosystem: gomod", "package-ecosystem: removed", 1)
+	// Every gomod entry: the provider module has one of its own, so replacing
+	// only the first would leave a survivor and the check would pass on a file
+	// that still watches the provider.
+	broken := strings.ReplaceAll(string(raw), "package-ecosystem: gomod", "package-ecosystem: removed")
 	updates := splitUpdates(broken)
 	_, found := lookupUpdate(updates, "gomod")
 	require.False(t, found, "dropping the gomod ecosystem must fail this check")
@@ -64,7 +72,7 @@ func TestDependabotConfigFailsIfEcosystemDropped(t *testing.T) {
 
 func assertWeeklyRoot(t *testing.T, block string) {
 	t.Helper()
-	require.Regexp(t, `(?m)^\s*directory:\s*/\s*$`, block)
+	require.Regexp(t, `(?m)^\s*directory:\s*/(\s*$|terraform-provider-sorobeacon)`, block)
 	require.Regexp(t, `(?m)^\s*interval:\s*weekly\s*$`, block)
 	require.Regexp(t, `(?m)^\s*open-pull-requests-limit:\s*5\s*$`, block)
 	require.Regexp(t, `(?m)^\s*prefix:\s*"chore\(deps\)"\s*$`, block)

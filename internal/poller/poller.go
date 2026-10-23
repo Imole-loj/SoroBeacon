@@ -91,7 +91,12 @@ type Poller struct {
 	source   EventSource
 	store    Store
 	registry *rules.Registry
-	interval time.Duration
+	// interval is how long the loop waits between cycles, stored as atomic
+	// nanoseconds rather than a plain Duration. A SIGHUP configuration
+	// reload changes POLL_INTERVAL while Run is sleeping, so the loop's
+	// reads and a reload's write must not race; Interval and SetInterval
+	// are the only accessors.
+	interval atomic.Int64
 	log      *slog.Logger
 	// network is the chain this poller reads, and the key its ingest row,
 	// ledger hashes and metrics are written under. Empty is the legacy
@@ -156,9 +161,19 @@ func (p *Poller) Position() Position {
 	return Position{}
 }
 
-// Interval returns the configured poll interval. Exposed for tests.
+// Interval returns the configured poll interval. Safe to call from another goroutine.
 func (p *Poller) Interval() time.Duration {
-	return p.interval
+	return time.Duration(p.interval.Load())
+}
+
+// SetInterval changes the wait between poll cycles on a running poller. It
+// is how a SIGHUP configuration reload applies a new POLL_INTERVAL without a
+// restart — and therefore without dropping the checkpoint the loop would
+// otherwise have to rebuild. Run re-reads the interval after every cycle, so
+// the new value takes effect on the next tick: not mid-wait, and not
+// retroactively in a backoff already under way.
+func (p *Poller) SetInterval(d time.Duration) {
+	p.interval.Store(int64(d))
 }
 
 func (p *Poller) recordPosition(processed, latest uint32, at time.Time) {
@@ -179,17 +194,20 @@ func (p *Poller) recordBackoff(backingOff bool) {
 // New wires a Poller. src is where events come from: NewRPCSource for a
 // Stellar RPC node, or the SoroTrail source for upstream mode.
 func New(src EventSource, st Store, reg *rules.Registry, d Dispatcher, interval time.Duration, log *slog.Logger) *Poller {
-	return &Poller{
+	p := &Poller{
 		source:   src,
 		store:    st,
 		registry: reg,
-		interval: interval,
 		log:      log,
 		now:      time.Now,
 		dispatch: d,
 		ing:      NewIngestor(st, reg, d, log),
 		sched:    NewScheduler(),
 	}
+	// Written through the same atomic SetInterval uses, so construction and
+	// a later reload can never disagree about which value is live.
+	p.interval.Store(int64(interval))
+	return p
 }
 
 // WithMetrics attaches Prometheus instrumentation to the poll loop, labelled
@@ -276,8 +294,8 @@ func (p *Poller) WithSlowRuleThreshold(d time.Duration) *Poller {
 // Run polls until ctx is cancelled. RPC errors back off exponentially
 // (capped at 10x the poll interval) instead of hammering the node.
 func (p *Poller) Run(ctx context.Context) {
-	p.log.Info("poller started", "interval", p.interval)
-	delay := p.interval
+	p.log.Info("poller started", "interval", p.Interval())
+	delay := p.Interval()
 	for {
 		select {
 		case <-ctx.Done():
@@ -294,12 +312,12 @@ func (p *Poller) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				continue
 			}
-			delay = min(delay*2, 10*p.interval)
+			delay = min(delay*2, 10*p.Interval())
 			p.recordBackoff(true)
 			p.log.Error("poll failed", "err", err, "retry_in", delay)
 			continue
 		}
-		delay = p.interval
+		delay = p.Interval()
 		p.recordBackoff(false)
 
 		// The absence sweep rides the same tick, but only after a cycle that

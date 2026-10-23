@@ -108,7 +108,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	// The handler reads its minimum level through a LevelVar — an atomic
+	// under the hood — so a SIGHUP reload can raise verbosity on a running
+	// process without rebuilding the logger every goroutine already holds.
+	var level slog.LevelVar
+	level.Set(cfg.LogLevel)
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &level}))
 	slog.SetDefault(log)
 	log.LogAttrs(context.Background(), slog.LevelInfo, "configuration loaded", cfg.LogAttrs()...)
 
@@ -120,7 +125,62 @@ func run() error {
 		return err
 	}
 	defer srv.Close()
+
+	// SIGHUP means "reload the settings that can change at runtime", not
+	// "exit": shutdown keeps its SIGINT/SIGTERM from the NotifyContext above.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	go reloadLoop(ctx, sigs, config.NewReloader(cfg), &level, srv.poller, log)
+
 	return srv.run(ctx)
+}
+
+// reloadLoop applies one reload per SIGHUP until ctx is cancelled. It is a
+// loop rather than a one-shot handler so a burst of signals is drained one
+// reload at a time instead of being collapsed by the signal coalescing a
+// channel-based Notify performs.
+func reloadLoop(ctx context.Context, sigs <-chan os.Signal, reloader *config.Reloader, level *slog.LevelVar, p *poller.Poller, log *slog.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sigs:
+			applyReload(reloader, level, p, log)
+		}
+	}
+}
+
+// applyReload runs one SIGHUP-triggered reload: re-read and validate the
+// configuration, then apply the settings that are safe to change at runtime
+// and log what changed, old value to new value. A rejected reload logs the
+// reasons and changes nothing — a bad reload must never leave the process
+// half-configured.
+func applyReload(reloader *config.Reloader, level *slog.LevelVar, p *poller.Poller, log *slog.Logger) {
+	changed, err := reloader.Reload()
+	if err != nil {
+		log.Error("configuration reload rejected", "err", err)
+		return
+	}
+	// The reload applied the reloadable settings to its own copy only after
+	// the whole configuration validated, so reading them back here cannot
+	// observe a half-applied reload. Consumers see the new values on their
+	// next read: the handler on its next record, the poller on its next
+	// cycle.
+	cfg := reloader.Current()
+	level.Set(cfg.LogLevel)
+	p.SetInterval(cfg.PollInterval)
+	for _, c := range changed.Applied {
+		log.Info("configuration reloaded", "setting", c.Setting, "old", c.Old, "new", c.New)
+	}
+	// Skipped settings did change but need a restart; saying so beats an
+	// operator sending SIGHUP repeatedly and wondering why nothing happened.
+	for _, c := range changed.Skipped {
+		log.Warn("reload skipped a changed setting; it takes effect after a restart", "setting", c.Setting, "old", c.Old, "new", c.New)
+	}
+	if len(changed.Applied) == 0 && len(changed.Skipped) == 0 {
+		log.Info("configuration reload: nothing changed")
+	}
 }
 
 // leaderLease is the part of lease.Lease the startup path drives: the loop

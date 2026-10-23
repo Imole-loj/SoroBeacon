@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -590,12 +591,17 @@ func constraintMessage(err error) string {
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeErr(w, r, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}
+		writeErr(w, r, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return false
+	}
+	if err := json.Unmarshal(data, v); err != nil {
 		writeErr(w, r, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}

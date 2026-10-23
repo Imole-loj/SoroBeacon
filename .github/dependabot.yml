@@ -18,6 +18,26 @@ updates:
           - minor
           - patch
 
+  # The Terraform provider is a nested module, and a gomod entry for "/" does
+  # not cover it: dependabot resolves a directory to exactly one go.mod. Without
+  # this entry the provider's own dependency tree (the Terraform plugin
+  # framework and its transitive deps) never gets a security patch.
+  - package-ecosystem: gomod
+    directory: /terraform-provider-sorobeacon
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    # Same grouping as the root module, for the same reason: the plugin
+    # framework's routine bumps arrive together and one PR reviews them fine.
+    groups:
+      go-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

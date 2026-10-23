@@ -151,7 +151,7 @@ func TestPostgresAlertListingUsesIndexes(t *testing.T) {
 		// the plan. Dropping the composite makes this assertion fail.
 		q, args := buildAlertQuery(ctx, AlertFilter{MonitorID: monitorIDs[0], Limit: page})
 		plan := explainJSON(t, st, q, args...)
-		assertScanThroughIndex(t, plan, "workspace_id_monitor_id_created_at_id_idx")
+		assertScanThroughIndex(t, plan, "monitor_id_workspace_id_created_at_id_idx")
 		assertNoSequentialScanOnData(t, plan, dataRelations)
 	})
 
@@ -161,7 +161,7 @@ func TestPostgresAlertListingUsesIndexes(t *testing.T) {
 		// likely to push a planner off the index.
 		q, args := buildAlertQuery(ctx, AlertFilter{MonitorID: monitorIDs[0], Limit: page, AfterID: hotID})
 		plan := explainJSON(t, st, q, args...)
-		assertScanThroughIndex(t, plan, "workspace_id_monitor_id_created_at_id_idx")
+		assertScanThroughIndex(t, plan, "monitor_id_workspace_id_created_at_id_idx")
 		assertNoSequentialScanOnData(t, plan, dataRelations)
 	})
 

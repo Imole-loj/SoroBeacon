@@ -86,12 +86,13 @@
 
 <fieldset>
   <legend>Add rule</legend>
+  {{if .BuilderErrors}}<p class="error" role="alert">{{range .BuilderErrors}}{{.}}<br>{{end}}</p>{{end}}
   <form method="post" action="/monitors/{{.Monitor.ID}}/rules">
     <label for="type">Type</label>
     <select id="type" name="type"
       hx-get="" hx-trigger="change"
       hx-target="#builder-fields" hx-swap="innerHTML">
-      {{range .RuleTypes}}<option value="{{.}}">{{.}}</option>{{end}}
+      {{range .RuleTypes}}<option value="{{.}}"{{if eq . $.BuilderType}} selected{{end}}>{{.}}</option>{{end}}
     </select>
     <script>
     (function(){
@@ -103,12 +104,12 @@
       });
     })();
     </script>
-    <div id="builder-fields"></div>
+    <div id="builder-fields">{{.BuilderFields}}</div>
     <input type="hidden" name="use_builder" value="true">
     <details>
       <summary class="muted">Raw JSON (advanced)</summary>
       <label for="params">Params (JSON)</label>
-      <textarea id="params" name="params" rows="4">{"event_name": "transfer"}</textarea>
+      <textarea id="params" name="params" rows="4">{{.BuilderRawParams}}</textarea>
     </details>
     <label for="severity">Severity</label>
     <select id="severity" name="severity">

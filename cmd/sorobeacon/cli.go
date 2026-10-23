@@ -41,6 +41,7 @@ Usage:
   sorobeacon help                           show this help
 
 Commands:
+	preflight                                      validate configuration before deployment
   monitor list|get|create|delete|enable|disable   monitors
   rule    list|add|delete                         rules of a monitor
   channel list|create|delete|test                 notification channels

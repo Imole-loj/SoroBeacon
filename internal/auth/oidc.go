@@ -109,6 +109,11 @@ type OIDCConfig struct {
 	// provider, one SoroBeacon, one workspace per group. The claim is trusted
 	// because the provider signed the token that carries it.
 	WorkspaceClaim string
+	// RoleClaim, when set, names an ID-token claim whose value is the role
+	// the session is minted with ("viewer", "editor" or "admin"). Empty
+	// means every identity that signs in is an admin, which is what a
+	// deployment with one provider and one operator wants.
+	RoleClaim string
 	// AllowedDomains, when non-empty, is the allow-list an identity must pass:
 	// its `email` claim must have one of these domains. Empty means every
 	// account the provider will authenticate is accepted, which is a real
@@ -135,6 +140,9 @@ type Identity struct {
 	// resolved here, at the one place that has both the claims and the
 	// configuration, so no handler has to know how the mapping works.
 	Workspace workspace.ID
+	// Role is what this caller may do. It comes from the configured role
+	// claim, and defaults to admin when no claim is configured.
+	Role Role
 }
 
 // OIDCProvider is a configured provider: it can start a login and finish one.
@@ -152,6 +160,7 @@ type OIDCProvider struct {
 	allowedDomains []string
 	ws             workspace.ID
 	wsClaim        string
+	roleClaim      string
 	stateTTL       time.Duration
 
 	// pending holds logins in flight, keyed by state. Server-side rather than
@@ -229,6 +238,7 @@ func NewOIDCProvider(ctx context.Context, cfg OIDCConfig) (*OIDCProvider, error)
 		allowedDomains: lowerAll(cfg.AllowedDomains),
 		ws:             ws,
 		wsClaim:        strings.TrimSpace(cfg.WorkspaceClaim),
+		roleClaim:      strings.TrimSpace(cfg.RoleClaim),
 		stateTTL:       ttl,
 		pending:        map[string]*pendingLogin{},
 		now:            time.Now,
@@ -410,26 +420,44 @@ func (p *OIDCProvider) CompleteLogin(ctx context.Context, q url.Values, cookieSt
 		Email:     claims.Email,
 		Name:      claims.Name,
 		Workspace: p.ws,
+		// An identity that signs in is an operator of this instance until
+		// the provider says otherwise. A deployment that wants less maps a
+		// role claim; one that does not get the reach it had before roles
+		// existed.
+		Role: RoleAdmin,
 	}
 	if err := p.checkAccount(identity); err != nil {
 		return nil, "", err
 	}
-	if p.wsClaim != "" {
+	if p.wsClaim != "" || p.roleClaim != "" {
 		// A second pass into the whole claim set: the typed struct above knows
 		// the three claims this package cares about intrinsically, and the
-		// workspace claim is a name the operator chose.
+		// workspace and role claims are names the operator chose.
 		var raw map[string]any
 		if err := idToken.Claims(&raw); err != nil {
 			return nil, "", fmt.Errorf("auth: OIDC id_token claims: %w", err)
 		}
-		if mapped, ok := claimString(raw, p.wsClaim); ok && workspace.Valid(mapped) {
-			identity.Workspace = workspace.ID(mapped)
+		if p.wsClaim != "" {
+			if mapped, ok := claimString(raw, p.wsClaim); ok && workspace.Valid(mapped) {
+				identity.Workspace = workspace.ID(mapped)
+			}
+			// An absent or unusable claim falls back to the configured workspace
+			// rather than refusing the login: OIDC_WORKSPACE is the operator's own
+			// statement of where such a user belongs, so the fallback is a choice
+			// on record, not a silent default. It is logged by the caller, which
+			// sees the workspace in the sign-in line it writes.
 		}
-		// An absent or unusable claim falls back to the configured workspace
-		// rather than refusing the login: OIDC_WORKSPACE is the operator's own
-		// statement of where such a user belongs, so the fallback is a choice
-		// on record, not a silent default. It is logged by the caller, which
-		// sees the workspace in the sign-in line it writes.
+		if p.roleClaim != "" {
+			// A role claim that names no known role is ignored for the same
+			// reason: the operator configured the mapping, and an identity the
+			// provider did not classify keeps the default rather than losing
+			// its access to an instance it can otherwise sign in to.
+			if mapped, ok := claimString(raw, p.roleClaim); ok {
+				if role, ok := ParseRole(mapped); ok {
+					identity.Role = role
+				}
+			}
+		}
 	}
 	return identity, pending.next, nil
 }

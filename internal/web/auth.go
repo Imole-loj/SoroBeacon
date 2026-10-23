@@ -112,7 +112,13 @@ func (s *Server) authMiddleware() func(http.Handler) http.Handler {
 				http.Redirect(w, r, loginPath+"?next="+url.QueryEscape(safeNext(r.URL.RequestURI())), http.StatusSeeOther)
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(workspace.With(r.Context(), ws)))
+			ctx := workspace.With(r.Context(), ws)
+			// The role travels with the request so the role check downstream
+			// does not resolve the session a second time.
+			if role, ok := s.auth.RoleForRequest(r); ok {
+				ctx = auth.WithRole(ctx, role)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

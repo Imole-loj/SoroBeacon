@@ -62,7 +62,14 @@ func NewPagerDuty(config json.RawMessage) (Notifier, error) {
 
 // dedupKey is deterministic for a given (rule_id, event_id) pair, so a
 // redelivered alert does not open a second incident.
+//
+// A federated alert has no local rule, so the key carries the instance it
+// came from as well: without it, two peers forwarding the same event id
+// would share one incident and the second would update the first.
 func dedupKey(a Alert) string {
+	if a.FederationOrigin != "" {
+		return fmt.Sprintf("%s:%d:%s", a.FederationOrigin, a.RuleID, a.EventID)
+	}
 	return fmt.Sprintf("%d:%s", a.RuleID, a.EventID)
 }
 

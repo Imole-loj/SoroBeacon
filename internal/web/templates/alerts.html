@@ -50,9 +50,9 @@
   {{range .Alerts}}
   <tr>
     <td><a href="/alerts/{{.ID}}">{{.ID}}</a></td>
-    <td>{{index $.MonitorNames .MonitorID}}</td>
+    <td>{{if .Federated}}<span class="muted">from {{.FederationOrigin}}</span>{{else}}{{index $.MonitorNames .MonitorID}}{{end}}</td>
     {{if gt (len $.Networks) 1}}<td>{{if .Network}}{{.Network}}{{else}}<span class="muted">unassigned</span>{{end}}</td>{{end}}
-    <td>#{{.RuleID}}</td>
+    <td>{{if .Federated}}<span class="muted">#{{.SourceRuleID}} (remote)</span>{{else}}#{{.RuleID}}{{end}}</td>
     <td>{{if .Severity}}<span class="pill {{severityClass .Severity}}">{{.Severity}}</span>{{else}}<span class="pill warning">warning</span>{{end}}</td>
     <td>{{template "copyID" .EventID}}</td>
     <td><details><summary>view</summary>{{decodedEvent .Payload}}<pre>{{prettyJSON .Payload}}</pre></details></td>

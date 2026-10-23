@@ -291,6 +291,18 @@ func (f *fakeStore) RuleFiredWithin(_ context.Context, ruleID int64, window time
 	return false, nil
 }
 
+func (f *fakeStore) ListRuleAlertTimes(_ context.Context, ruleID int64, since time.Time) ([]time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var times []time.Time
+	for _, alert := range f.alerts {
+		if alert.RuleID == ruleID && !alert.CreatedAt.Before(since) {
+			times = append(times, alert.CreatedAt)
+		}
+	}
+	return times, nil
+}
+
 // MarkAlertInhibited marks an alert as inhibited by a source rule.
 func (f *fakeStore) MarkAlertInhibited(_ context.Context, alertID, sourceRuleID int64) error {
 	return nil // no-op for tests

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/sorotrail/sorobeacon/internal/notify"
 	"github.com/sorotrail/sorobeacon/internal/store"
 )
 
@@ -50,6 +51,9 @@ func (s *Server) listDeadLetters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, letters)
 }
 
+// redriveDeadLetter sends one dead-lettered alert again. A successful send
+// removes the row, so a repeated request is a 404 rather than a second page.
+// A failed send records an attempt and leaves the row for another try.
 func (s *Server) redriveDeadLetter(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
 	if err != nil {
@@ -94,9 +98,22 @@ func (s *Server) redriveDeadLetter(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, att := range attempts {
 		if att.ChannelID == ch.ID && att.Status == store.DeliveryStatusSuccess {
-			writeRetryGate(w, r, errors.New("already succeeded"))
+			// The alert already reached this channel through another path, so
+			// there is nothing to redeliver. Remove the stale record; leaving
+			// it would make it permanently unredrivable (every attempt would
+			// hit this branch) and keep it in the operator's queue forever.
+			if err := s.store.DeleteDeadLetter(r.Context(), dl.ID); err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			writeRetryGate(w, r, notify.ErrAlreadySucceeded)
 			return
 		}
+	}
+
+	if !ch.Enabled {
+		writeRetryGate(w, r, notify.ErrChannelDisabled)
+		return
 	}
 
 	notifier, err := s.factory.New(ch.Type, ch.Config)
@@ -127,7 +144,10 @@ func (s *Server) redriveDeadLetter(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err == nil {
-		_ = s.store.DeleteDeadLetter(ctx, dl.ID)
+		if deleteErr := s.store.DeleteDeadLetter(ctx, dl.ID); deleteErr != nil {
+			s.fail(w, r, deleteErr)
+			return
+		}
 		writeNoContent(w)
 		return
 	}

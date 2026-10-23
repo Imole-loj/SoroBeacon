@@ -82,6 +82,11 @@ func (s *Server) exportAlertsNDJSON(w http.ResponseWriter, r *http.Request) {
 // exportAlertNDJSONRow converts an alert to an NDJSON object with
 // expanded monitor_name, event_name, contract_id, and ledger fields
 // extracted from the payload.
+//
+// A federated alert belongs to no local monitor and no local rule, so its
+// monitor and rule ids are zero and the fields that say where it came from
+// are added instead: an export that cannot tell a local alert from a
+// forwarded one is not much use.
 func exportAlertNDJSONRow(a store.Alert, monitorName string) map[string]any {
 	var p struct {
 		ContractID string `json:"contract_id"`
@@ -89,7 +94,7 @@ func exportAlertNDJSONRow(a store.Alert, monitorName string) map[string]any {
 		Ledger     uint32 `json:"ledger"`
 	}
 	_ = json.Unmarshal(a.Payload, &p)
-	return map[string]any{
+	row := map[string]any{
 		"id":           strconv.FormatInt(a.ID, 10),
 		"monitor_id":   strconv.FormatInt(a.MonitorID, 10),
 		"monitor_name": monitorName,
@@ -101,4 +106,13 @@ func exportAlertNDJSONRow(a store.Alert, monitorName string) map[string]any {
 		"created_at":   a.CreatedAt.UTC().Format(time.RFC3339),
 		"payload":      string(a.Payload),
 	}
+	if a.Federated {
+		row["federated"] = true
+		row["federation_origin"] = a.FederationOrigin
+		row["source_monitor_id"] = strconv.FormatInt(a.SourceMonitorID, 10)
+		row["source_rule_id"] = strconv.FormatInt(a.SourceRuleID, 10)
+		row["monitor_name"] = "federated:" + a.FederationOrigin
+		row["rule_id"] = strconv.FormatInt(a.SourceRuleID, 10)
+	}
+	return row
 }

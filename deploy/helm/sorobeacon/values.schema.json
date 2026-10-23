@@ -162,6 +162,10 @@
           "type": "string",
           "description": "SoroTrail indexer base URL. Required when sourceMode is sorotrail."
         },
+        "instanceName": {
+          "type": "string",
+          "description": "Stable identity stamped as the origin on federated alerts. Empty is fine unless a federation channel is created."
+        },
         "httpAddr": {
           "type": "string",
           "pattern": "^:?[0-9]+$|^[^:]+:[0-9]+$",
@@ -186,6 +190,19 @@
           "type": "string",
           "pattern": "^[0-9]+(ms|s|m|h)$",
           "description": "How long since a monitor's last match before it is shown as silent."
+        },
+        "flappingEpisodes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Alert episodes inside the flapping window that trigger damping."
+        },
+        "flappingWindow": {
+          "type": "string",
+          "description": "Go duration for the flapping episode-count window."
+        },
+        "flappingQuietAfter": {
+          "type": "string",
+          "description": "Go duration of quiet that separates alert episodes."
         },
         "readyzLagThreshold": {
           "type": "integer",
@@ -427,6 +444,10 @@
         "workspaceClaim": {
           "type": "string",
           "description": "OIDC_WORKSPACE_CLAIM: claim naming the user's workspace."
+        },
+        "roleClaim": {
+          "type": "string",
+          "description": "OIDC_ROLE_CLAIM: claim naming the user's role."
         },
         "loginStateTTL": {
           "type": "string",

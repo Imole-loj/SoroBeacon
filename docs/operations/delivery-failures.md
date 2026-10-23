@@ -383,13 +383,13 @@ working through the queue of permanently failed deliveries.
 The two entry points do not yet behave identically. This is documented as it
 works today rather than glossed over:
 
-* **Disabled channel.** The dashboard path refuses to redrive a disabled
-  channel and returns `502`; re-enable the channel first. The API path does
-  **not** check `enabled` and can deliver through a disabled channel.
-* **Already succeeded.** The API returns `409` and leaves the dead letter in
-  place. The dashboard path deletes the dead letter and then returns `502`,
-  because the dispatcher treats "already succeeded" as an error it surfaces
-  after cleanup.
+* **Disabled channel.** Both paths refuse to redrive a disabled channel, so
+  re-enable it first. The dashboard reports `502`; the API reports `400`.
+* **Already succeeded.** Both paths delete the dead letter first. The
+  dashboard then returns `502`, because the dispatcher treats "already
+  succeeded" as an error it surfaces after cleanup; the API returns `409`, and
+  a repeat request is `404` because the row is gone. Neither path sends the
+  alert again.
 * **Unbuildable channel config.** The API reports `500`; the dashboard reports
   `502`.
 * **Missing channel.** The API returns `404`; the dashboard returns `502`.

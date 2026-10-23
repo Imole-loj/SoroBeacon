@@ -163,6 +163,19 @@ chars), and counted in `/metrics` per channel and outcome.
   `monitors.last_matched_at` drives the "silent" marker; the Overview chart uses
   `alerts` over 30 days.
 
+## Lifecycle boundaries
+
+Flapping detection groups persisted alert times into episodes and damps repeat
+notifications without removing alert rows. It is independent of
+[frequency thresholds](../rules/frequency-threshold.md), which count matching
+events, and [cooldowns](../rules/cooldown.md), which suppress alert creation
+for a fixed interval. The thresholds and the summary behavior are documented
+in [configuration](../configuration.md#flapping-detection).
+
+There is no separate alert lifecycle state machine or "resolved" state.
+`POST /alerts/{id}/acknowledge` records acknowledgement and stops escalation;
+grouping, inhibition and flapping are delivery-time decisions.
+
 ## "Why didn't it…" quick map
 
 | Symptom | Most likely step | First thing to check |

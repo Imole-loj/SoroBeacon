@@ -23,7 +23,7 @@ func oidcEnv(t *testing.T, env map[string]string) {
 	t.Setenv("DATABASE_URL", "postgres://x")
 	for _, key := range []string{
 		"OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL",
-		"OIDC_SCOPES", "OIDC_WORKSPACE", "OIDC_WORKSPACE_CLAIM",
+		"OIDC_SCOPES", "OIDC_WORKSPACE", "OIDC_WORKSPACE_CLAIM", "OIDC_ROLE_CLAIM",
 		"OIDC_ALLOWED_DOMAINS", "OIDC_LOGIN_STATE_TTL",
 	} {
 		t.Setenv(key, "")
@@ -60,7 +60,7 @@ func TestLoadSingleSignOnIsOffByDefault(t *testing.T) {
 func TestLoadRejectsSSOSettingsWithoutIssuer(t *testing.T) {
 	for _, key := range []string{
 		"OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL", "OIDC_SCOPES",
-		"OIDC_WORKSPACE", "OIDC_WORKSPACE_CLAIM", "OIDC_ALLOWED_DOMAINS", "OIDC_LOGIN_STATE_TTL",
+		"OIDC_WORKSPACE", "OIDC_WORKSPACE_CLAIM", "OIDC_ROLE_CLAIM", "OIDC_ALLOWED_DOMAINS", "OIDC_LOGIN_STATE_TTL",
 	} {
 		t.Run(key, func(t *testing.T) {
 			oidcEnv(t, map[string]string{key: "anything"})
@@ -81,6 +81,7 @@ func TestLoadSingleSignOn(t *testing.T) {
 		"OIDC_SCOPES":          "openid, email  profile",
 		"OIDC_WORKSPACE":       "acme",
 		"OIDC_WORKSPACE_CLAIM": "tenant",
+		"OIDC_ROLE_CLAIM":      "soro_role",
 		"OIDC_ALLOWED_DOMAINS": "Example.com, ops.EXAMPLE",
 		"OIDC_LOGIN_STATE_TTL": "3m",
 		"API_TOKEN":            "operator-token",
@@ -97,6 +98,7 @@ func TestLoadSingleSignOn(t *testing.T) {
 	assert.Equal(t, []string{"openid", "email", "profile"}, cfg.OIDC.Scopes)
 	assert.Equal(t, workspace.ID("acme"), cfg.OIDC.Workspace)
 	assert.Equal(t, "tenant", cfg.OIDC.WorkspaceClaim)
+	assert.Equal(t, "soro_role", cfg.OIDC.RoleClaim)
 	// Domains are compared case-insensitively, so the stored form is already
 	// folded and no comparison has to remember to.
 	assert.Equal(t, []string{"example.com", "ops.example"}, cfg.OIDC.AllowedDomains)
@@ -114,6 +116,7 @@ func TestLoadSingleSignOn(t *testing.T) {
 	assert.Equal(t, cfg.OIDC.Scopes, auth.Scopes)
 	assert.Equal(t, cfg.OIDC.Workspace, auth.Workspace)
 	assert.Equal(t, cfg.OIDC.WorkspaceClaim, auth.WorkspaceClaim)
+	assert.Equal(t, cfg.OIDC.RoleClaim, auth.RoleClaim)
 	assert.Equal(t, cfg.OIDC.AllowedDomains, auth.AllowedDomains)
 	assert.Equal(t, cfg.OIDC.StateTTL, auth.StateTTL)
 }

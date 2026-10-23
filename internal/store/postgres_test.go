@@ -136,6 +136,11 @@ func (p *Postgres) setAlertCreatedAt(ctx context.Context, id int64, at time.Time
 	return err
 }
 
+func (p *Postgres) setDeliveryAttemptAt(ctx context.Context, id int64, at time.Time) error {
+	_, err := p.pool.Exec(ctx, `UPDATE delivery_attempts SET attempted_at = $1 WHERE id = $2`, at, id)
+	return err
+}
+
 func (p *Postgres) backdateRuleLastAlert(ctx context.Context, id int64, d time.Duration) error {
 	_, err := p.pool.Exec(ctx,
 		`UPDATE rules SET last_alert_at = now() - make_interval(secs => $2) WHERE id = $1`, id, d.Seconds())

@@ -32,11 +32,23 @@ func parseAlertFilter(w http.ResponseWriter, r *http.Request) (store.AlertFilter
 			writeErr(w, r, http.StatusBadRequest, "invalid monitor_id")
 			return f, false
 		}
+		// Zero is the store's "no filter" value, so a request for monitor 0
+		// would otherwise be answered with every alert rather than with the
+		// mistake it is. There is no monitor 0, and a federated alert belongs
+		// to no monitor at all.
+		if id <= 0 {
+			writeErr(w, r, http.StatusBadRequest, "invalid monitor_id")
+			return f, false
+		}
 		f.MonitorID = id
 	}
 	if v := q.Get("rule_id"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
+			writeErr(w, r, http.StatusBadRequest, "invalid rule_id")
+			return f, false
+		}
+		if id <= 0 {
 			writeErr(w, r, http.StatusBadRequest, "invalid rule_id")
 			return f, false
 		}
@@ -254,10 +266,21 @@ func alertCSVRow(a store.Alert, monitorName string) []string {
 	if sev == "" {
 		sev = "warning"
 	}
+	// A federated alert belongs to no local monitor, so the monitor column
+	// names the instance it came from instead of being empty: an export that
+	// cannot tell a local alert from a forwarded one is not much use.
+	if a.Federated {
+		monitorName = "federated:" + a.FederationOrigin
+	}
+	ruleID := strconv.FormatInt(a.RuleID, 10)
+	if a.Federated {
+		// The rule id is the sender's, not a local one.
+		ruleID = strconv.FormatInt(a.SourceRuleID, 10)
+	}
 	return []string{
 		strconv.FormatInt(a.ID, 10),
 		csvSafe(monitorName),
-		strconv.FormatInt(a.RuleID, 10),
+		ruleID,
 		csvSafe(sev),
 		csvSafe(p.ContractID),
 		csvSafe(p.EventName),
@@ -393,6 +416,10 @@ func notifyAlertFromStore(ctx context.Context, st store.Store, a store.Alert) no
 		Enrichment: a.Enrichment,
 		CreatedAt:  a.CreatedAt,
 		Severity:   string(a.Severity),
+		// A federated alert has no local rule, so the channels that key on
+		// the rule need the instance it came from to tell two peers' alerts
+		// apart.
+		FederationOrigin: a.FederationOrigin,
 	}
 	var p struct {
 		ContractID string `json:"contract_id"`

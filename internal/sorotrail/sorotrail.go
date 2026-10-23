@@ -43,8 +43,9 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 
 // stats is the slice of GET /api/v1/stats the source needs.
 type stats struct {
-	FirstLedger int64 `json:"first_ledger"`
-	LastLedger  int64 `json:"last_ledger"`
+	FirstLedger       int64  `json:"first_ledger"`
+	LastLedger        int64  `json:"last_ledger"`
+	NetworkPassphrase string `json:"network_passphrase"`
 }
 
 // eventsResponse is GET /api/v1/events.
@@ -100,6 +101,13 @@ func (c *Client) Stats(ctx context.Context) (stats, error) {
 	var s stats
 	err := c.getJSON(ctx, "/api/v1/stats", nil, &s)
 	return s, err
+}
+
+// NetworkPassphrase returns the identity advertised by the stats endpoint,
+// when the upstream includes it. Older SoroTrail versions omit this field.
+func (c *Client) NetworkPassphrase(ctx context.Context) (string, error) {
+	s, err := c.Stats(ctx)
+	return s.NetworkPassphrase, err
 }
 
 // Events fetches one page of events. contractID may be a comma-separated

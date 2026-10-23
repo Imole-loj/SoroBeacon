@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -437,4 +438,83 @@ func (s *Server) recordChannelTestHealth(ctx context.Context, channelID int64, s
 	if err := s.store.RecordChannelHealth(ctx, channelID, u); err != nil {
 		s.log.Error("record channel health", "channel_id", channelID, "err", err)
 	}
+}
+
+// The windows GET /channels/{id}/stats accepts. The default matches the
+// dashboard's delivery-health column, so the endpoint and the channels page
+// answer "how is this channel doing?" over the same span unless the caller
+// asks otherwise. The maximum is the same 90-day cap
+// (store.ClampAlertSeriesDays) the daily-alert chart uses: it bounds every
+// query the endpoint can produce, so no window value can ask the database to
+// scan unbounded history. Windows above the cap are rejected rather than
+// silently shortened — a caller that asked for a year should learn it did not
+// get one, not receive quietly different data than it asked for.
+const (
+	defaultChannelStatsWindow = 24 * time.Hour
+	maxChannelStatsWindow     = 90 * 24 * time.Hour
+)
+
+// channelStatsResponse is the wire shape of GET /channels/{id}/stats. It
+// embeds the store's aggregate and adds only the window echo, so a client can
+// tell which window a response describes without the server restating the
+// counts. It carries no channel configuration: only counts, rates and
+// timestamps leave the handler, exactly as the store type promises.
+type channelStatsResponse struct {
+	store.ChannelDeliveryStats
+	// Window is the effective window as it was requested (trimmed), or the
+	// default "24h" when the parameter was omitted, so a client can match
+	// the echo against what it asked for.
+	Window string `json:"window"`
+}
+
+// channelStats serves GET /channels/{id}/stats?window=24h — per-channel
+// delivery outcomes over a bounded window, aggregated in the database (see
+// store.GetChannelDeliveryStats) rather than by shipping attempts to Go.
+//
+// A channel with no attempts in the window is a 200 with zero counts, null
+// timestamps and no success_rate: "this channel has not been used (lately)"
+// is a real answer, distinct from the 404 that says the channel does not
+// exist. A malformed, non-positive or oversized window is a 400 before the
+// store is consulted, so a bad value costs a parse and a comparison instead
+// of a database scan.
+func (s *Server) channelStats(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeErr(w, r, http.StatusBadRequest, "invalid id")
+		return
+	}
+	window := defaultChannelStatsWindow
+	// The label echoes the caller's own spelling (trimmed), falling back to
+	// the default: "90m" reads back as "90m", not as Duration.String()'s
+	// "1h30m0s", so a client can match the echo against what it sent.
+	windowLabel := "24h"
+	if raw := strings.TrimSpace(r.URL.Query().Get("window")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			writeErr(w, r, http.StatusBadRequest,
+				fmt.Sprintf("invalid window %q (want a Go duration such as \"24h\" or \"90m\")", raw))
+			return
+		case d <= 0:
+			writeErr(w, r, http.StatusBadRequest, "invalid window: must be greater than zero")
+			return
+		case d > maxChannelStatsWindow:
+			writeErr(w, r, http.StatusBadRequest,
+				fmt.Sprintf("invalid window: at most %s", maxChannelStatsWindow))
+			return
+		default:
+			window = d
+			windowLabel = raw
+		}
+	}
+	// The cutoff is computed once, in UTC, and bound as a parameter: SQL and
+	// Go see the same instant, so the window's start cannot drift between the
+	// two no matter which clock moved.
+	since := time.Now().UTC().Add(-window)
+	stats, err := s.store.GetChannelDeliveryStats(r.Context(), id, since)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, channelStatsResponse{ChannelDeliveryStats: stats, Window: windowLabel})
 }

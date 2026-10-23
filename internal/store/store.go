@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -423,6 +424,17 @@ func ParseTimeout(raw []byte) (time.Duration, error) {
 	return 0, fmt.Errorf("must be integer seconds or duration string such as \"15s\"")
 }
 
+// NormalizedSeverity maps the empty severity onto the default one, so a
+// write that does not know the severity stores the value the database's
+// default column would have stored anyway. The CHECK constraint on the
+// column has a closed vocabulary, and the empty string is not in it.
+func NormalizedSeverity(s Severity) Severity {
+	if s == "" {
+		return SeverityWarning
+	}
+	return s
+}
+
 // Alert records one rule match on one event. EventID is the source event's
 // TOID-based id; (RuleID, EventID) is unique so the same match can never
 // fire twice.
@@ -483,6 +495,24 @@ type Alert struct {
 	// has not been acknowledged, so an escalation attached to it keeps
 	// running. Acknowledging stops escalation.
 	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	// Federated marks an alert another SoroBeacon instance forwarded. Such an
+	// alert belongs to no local monitor and no local rule: the ids in the
+	// payload are the sending instance's, and writing them against this
+	// instance's foreign keys would either fail or attach the alert to an
+	// unrelated local monitor.
+	//
+	// A federated alert has MonitorID and RuleID zero — zero is not a valid
+	// id, so it is how "no local monitor" is spelled — and carries the
+	// sender's ids in SourceMonitorID and SourceRuleID instead.
+	Federated bool `json:"federated"`
+	// FederationOrigin is the sending instance's identifier, so the
+	// dashboard can say where the alert came from. Empty for a local alert.
+	FederationOrigin string `json:"federation_origin,omitempty"`
+	// SourceMonitorID and SourceRuleID are the monitor and rule ids on the
+	// sending instance. They are kept so the origin of an alert survives the
+	// trip, and they are never used as local keys.
+	SourceMonitorID int64 `json:"source_monitor_id,omitempty"`
+	SourceRuleID    int64 `json:"source_rule_id,omitempty"`
 }
 
 // Maintenance window scopes. A window suppresses matching alerts for its
@@ -563,6 +593,66 @@ type DeliveryAttempt struct {
 	Status          string    `json:"status"` // DeliveryStatusSuccess or DeliveryStatusFailed
 	ResponseSnippet string    `json:"response_snippet"`
 	AttemptedAt     time.Time `json:"attempted_at"`
+}
+
+// ChannelDeliveryStats is one channel's delivery outcomes aggregated over a
+// time window, answering "is this channel delivering?" without shipping the
+// attempts themselves. The aggregation happens in the database (see
+// GetChannelDeliveryStats); this type only carries the result.
+//
+// Every delivery_attempts row is terminal by construction: the dispatcher
+// writes one row per finished try, with status success or failed, and a retry
+// writes another row. So Total is every try in the window — including several
+// tries of the same alert — and Succeeded + Failed == Total for any data this
+// store has ever written. Attempts older than the window are simply not
+// counted; a pending or queued alert is not an attempt until it is tried.
+//
+// SuccessRate is succeeded/total as a ratio in [0, 1], and is nil — never 0 or
+// 1 — when there were no attempts in the window: an undefined rate must not be
+// rendered as a percentage by a client that cannot tell "no data" from "all
+// failed".
+type ChannelDeliveryStats struct {
+	ChannelID   int64    `json:"channel_id"`
+	Total       int64    `json:"total"`
+	Succeeded   int64    `json:"succeeded"`
+	Failed      int64    `json:"failed"`
+	SuccessRate *float64 `json:"success_rate,omitempty"`
+	// LastSuccessAt is the newest attempted_at among the window's successful
+	// attempts, nil when the window holds none — including when the channel
+	// succeeded before the window and has not since.
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	// LastFailureAt likewise, for failed attempts.
+	LastFailureAt *time.Time `json:"last_failure_at,omitempty"`
+}
+
+// deriveSuccessRate fills SuccessRate from the scanned counts. It is called by
+// both backends so the ratio — and the nil-when-empty rule — has exactly one
+// definition; the division is float64 on purpose so an integer percentage can
+// never lose precision on the way through.
+func (c *ChannelDeliveryStats) deriveSuccessRate() {
+	if c.Total == 0 {
+		c.SuccessRate = nil
+		return
+	}
+	rate := float64(c.Succeeded) / float64(c.Total)
+	c.SuccessRate = &rate
+}
+
+// HasAttempts reports whether the window held any delivery attempts at all.
+// The dashboard needs it to show "no attempts" rather than 0% for a channel
+// that has never been used (or simply was not used inside the window).
+func (c ChannelDeliveryStats) HasAttempts() bool { return c.Total > 0 }
+
+// SuccessPercent renders the rate as a 0–100 number rounded to one decimal,
+// which is the display form the dashboard and any client should use so the
+// same counts always show the same number. Undefined (no attempts) is -1, a
+// sentinel outside the valid range: a caller must check HasAttempts first, and
+// -1 cannot be mistaken for a real 0%.
+func (c ChannelDeliveryStats) SuccessPercent() float64 {
+	if c.SuccessRate == nil {
+		return -1
+	}
+	return math.Round(*c.SuccessRate*1000) / 10
 }
 
 // AbsenceState is the last time a rule saw the event it is waiting for.
@@ -954,6 +1044,17 @@ type Monitors interface {
 	ListDeletedMonitors(ctx context.Context, f ListFilter) ([]Monitor, error)
 	// HardDeleteMonitor permanently removes a monitor and its rules/attachments.
 	HardDeleteMonitor(ctx context.Context, id int64) error
+	// CreateMonitorWithRules creates a monitor, its rules and its channel
+	// attachments in one transaction: either all of it is written, or none
+	// of it is. A monitor that exists without the rules it was supposed to
+	// have is a monitor that watches a contract and never says anything, and
+	// nothing else in the system would report the gap — so a caller that
+	// cannot write all three must not write any of them.
+	//
+	// The rules are attached to the new monitor, so their MonitorID is set
+	// here; the channel ids must all belong to the caller's workspace, and
+	// an unknown one fails the whole call with ErrNotFound.
+	CreateMonitorWithRules(ctx context.Context, m *Monitor, rules []*Rule, channelIDs []int64) error
 	SetMonitorChannels(ctx context.Context, monitorID int64, channelIDs []int64) error
 	// SetMonitorsEnabled sets enabled on every existing id in one statement.
 	// Unknown IDs are returned rather than treated as an error so a mixed
@@ -1027,6 +1128,14 @@ type Channels interface {
 	// ListChannelsByIDs returns the enabled channels among ids, ordered by id,
 	// so an escalation step can notify its channel set in one query.
 	ListChannelsByIDs(ctx context.Context, ids []int64) ([]Channel, error)
+	// GetChannelDeliveryStats aggregates one channel's delivery attempts with
+	// attempted_at at or after since, or ErrNotFound when the channel does
+	// not exist in the caller's workspace. since is an absolute UTC cutoff
+	// computed once by the caller so the window's start cannot disagree
+	// between SQL and Go; the aggregation itself runs in the database and a
+	// channel with no attempts in the window returns explicit zero counts and
+	// nil timestamps (see ChannelDeliveryStats).
+	GetChannelDeliveryStats(ctx context.Context, channelID int64, since time.Time) (ChannelDeliveryStats, error)
 }
 
 // Alerts persists alerts and delivery attempts.

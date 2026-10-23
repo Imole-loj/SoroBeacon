@@ -19,7 +19,7 @@
 </p>
 </form>
 <table>
-  <tr><th><input type="checkbox" aria-label="Select all" onclick="document.querySelectorAll('input[name=ids]').forEach(c => c.checked = this.checked)"></th><th>ID</th><th>Name</th><th>Type</th><th>Min Severity</th><th>Status</th><th>Health</th><th>Created</th><th></th></tr>
+  <tr><th><input type="checkbox" aria-label="Select all" onclick="document.querySelectorAll('input[name=ids]').forEach(c => c.checked = this.checked)"></th><th>ID</th><th>Name</th><th>Type</th><th>Min Severity</th><th>Status</th><th>Health</th><th>Delivery (last {{.DeliveryWindow}})</th><th>Created</th><th></th></tr>
   {{range .Channels}}
   <tr{{if .AutoDisabled}} class="attention"{{end}}>
     <td><input type="checkbox" form="bulk-channels" name="ids" value="{{.ID}}" aria-label="Select channel {{.Name}}"></td>
@@ -47,6 +47,22 @@
         <span class="muted">Last success {{relTimePtr .LastSuccessAt}}.</span>
       {{else}}
         <span class="muted">No deliveries yet.</span>
+      {{end}}
+    </td>
+    <td>
+      {{/* Delivery outcomes over the window, aggregated in the database.
+           A channel with no attempts says so in words — never 0%, which
+           would read as "everything failed". Below 99% the pill reads
+           "degraded" as well as changing colour, so the state does not
+           depend on colour alone. Only counts and timestamps appear: the
+           stats never carry channel configuration. */}}
+      {{$ds := index $.DeliveryStats .ID}}
+      {{if $ds.HasAttempts}}
+        <span class="pill {{if ge $ds.SuccessPercent 99.0}}on{{else}}never{{end}}">{{$ds.SuccessPercent}}% {{if ge $ds.SuccessPercent 99.0}}ok{{else}}degraded{{end}}</span>
+        <div class="muted">{{$ds.Succeeded}} of {{$ds.Total}} delivered.</div>
+        {{with $ds.LastFailureAt}}<div class="muted">Last failure {{relTimePtr .}}.</div>{{end}}
+      {{else}}
+        <span class="muted">— No attempts</span>
       {{end}}
     </td>
     <td>{{formatTime .CreatedAt $.Timezone}}{{with relTime .CreatedAt}} <span class="muted">({{.}})</span>{{end}}</td>

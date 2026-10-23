@@ -56,6 +56,28 @@ func TestEmailSubjectPrefix(t *testing.T) {
 	}
 }
 
+func TestEmailCheckAuthenticatesWithoutSending(t *testing.T) {
+	srv := newSMTPTestServer(t, smtpTestOptions{authMechanisms: []string{"PLAIN"}})
+	n, err := NewEmail(json.RawMessage(fmt.Sprintf(
+		`{"host":%q,"port":%d,"username":"beacon","password":"secret","from":"beacon@example.test","to":["ops@example.test"]}`,
+		srv.host(), srv.port(),
+	)))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, n.(PreflightChecker).Check(ctx))
+
+	session := srv.waitSession(t)
+	assert.True(t, session.authSeen)
+	assert.Equal(t, "beacon", session.authUser)
+	assert.Equal(t, "secret", session.authPass)
+	assert.Empty(t, session.mailFrom)
+	assert.Empty(t, session.rcptTo)
+	assert.Empty(t, session.data)
+	assert.Contains(t, session.commands, "QUIT")
+}
+
 // smtpTestOptions configure the in-process SMTP server the email channel's
 // send path is driven against.
 //
@@ -729,7 +751,7 @@ func TestEmailSendTimesOutOnStalledGreeting(t *testing.T) {
 	srv := newSMTPTestServer(t, smtpTestOptions{stallGreeting: true})
 	n, err := NewEmail(emailTestConfig(t, srv, map[string]any{
 		"connect_timeout_seconds": 1,
-		"timeout_seconds":          5,
+		"timeout_seconds":         5,
 	}))
 	require.NoError(t, err)
 
@@ -748,7 +770,7 @@ func TestEmailSendTimesOutOnStalledConversation(t *testing.T) {
 	srv := newSMTPTestServer(t, smtpTestOptions{stallAfter: "MAIL"})
 	n, err := NewEmail(emailTestConfig(t, srv, map[string]any{
 		"connect_timeout_seconds": 5,
-		"timeout_seconds":          1,
+		"timeout_seconds":         1,
 	}))
 	require.NoError(t, err)
 
@@ -766,7 +788,7 @@ func TestEmailSendHonoursContextCancellation(t *testing.T) {
 	srv := newSMTPTestServer(t, smtpTestOptions{stallGreeting: true})
 	n, err := NewEmail(emailTestConfig(t, srv, map[string]any{
 		"connect_timeout_seconds": 30,
-		"timeout_seconds":          30,
+		"timeout_seconds":         30,
 	}))
 	require.NoError(t, err)
 

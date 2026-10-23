@@ -488,10 +488,15 @@ func TestScopedTokenDeniedOnUnmappedRoute(t *testing.T) {
 		t.Error("the handler ran for a request the scope check denied")
 	}
 
-	// The static token still reaches it: this denial is about scoped credentials,
-	// not a new gate on the operator's own.
+	// The static token does not reach it either. The scope table only
+	// constrains scoped credentials, but the role table is the review record
+	// for every credential: a route nobody gave a role is a route nobody
+	// decided should be reachable.
 	res = callJSON(t, h, http.MethodGet, "/unmapped-for-test", acmeToken, "")
-	if res.Code != http.StatusOK {
-		t.Fatalf("unmapped route with a static token = %d, want 200", res.Code)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("unmapped route with a static token = %d, want 403", res.Code)
+	}
+	if strings.Contains(res.Body.String(), "the handler must not run") {
+		t.Error("the handler ran for a request the role check denied")
 	}
 }

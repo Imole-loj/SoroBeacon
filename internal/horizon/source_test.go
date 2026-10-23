@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/sorotrail/sorobeacon/internal/poller"
 	"github.com/sorotrail/sorobeacon/internal/stellar"
+	"github.com/stellar/go-stellar-sdk/xdr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,7 +153,7 @@ func TestSourceCursorResumption(t *testing.T) {
 	// Cursor should encode contract index 0 and the horizon cursor
 	decoded, _ := base64.RawURLEncoding.DecodeString(page.NextCursor)
 	parts := strings.Split(string(decoded), "|")
-	assert.Equal(t, "0", parts[0]) // contract index
+	assert.Equal(t, "0", parts[0])                   // contract index
 	assert.Equal(t, "horizon-cursor-5000", parts[1]) // horizon cursor
 
 	// Second call with cursor should continue on contract A
@@ -333,6 +333,16 @@ func TestClientLatestLedger(t *testing.T) {
 	latest, err := c.GetLatestLedger(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, uint32(4200), latest)
+}
+
+func TestClientNetworkPassphrase(t *testing.T) {
+	srv := &stubHorizon{rootJSON: `{"core_latest_ledger":4200,"network_passphrase":"test-passphrase"}`}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	passphrase, err := NewClient(ts.URL, nil).NetworkPassphrase(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "test-passphrase", passphrase)
 }
 
 // stubHorizon serves scripted /accounts/{id}/transactions and / responses.

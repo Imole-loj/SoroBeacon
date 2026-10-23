@@ -47,4 +47,33 @@ func TestListRuleTypesIncludesEveryRegisteredType(t *testing.T) {
 			t.Errorf("registered rule type %q missing from response", name)
 		}
 	}
+
+	// Boolean parameters are a distinct type so clients render a checkbox or
+	// true/false control and send a JSON boolean, not the string "false".
+	wantBoolean := map[string][]string{
+		rules.TypeContractAllowlist: {"exclude"},
+		rules.TypeNumericRange:      {"inclusive", "outside"},
+		rules.TypeTimeWindow:        {"outside"},
+	}
+	for typ, names := range wantBoolean {
+		item, ok := got[typ]
+		if !ok {
+			t.Errorf("missing rule type %q", typ)
+			continue
+		}
+		fields := make(map[string]rules.FieldSchema, len(item.Parameters))
+		for _, field := range item.Parameters {
+			fields[field.Name] = field
+		}
+		for _, name := range names {
+			field, ok := fields[name]
+			if !ok {
+				t.Errorf("%s is missing boolean field %s", typ, name)
+				continue
+			}
+			if field.Type != "boolean" {
+				t.Errorf("%s.%s type = %q, want boolean", typ, name, field.Type)
+			}
+		}
+	}
 }

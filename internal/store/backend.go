@@ -77,3 +77,29 @@ func New(ctx context.Context, databaseURL string, settings PoolSettings, cipher 
 		return nil, fmt.Errorf("unsupported DATABASE_URL scheme %q (supported schemes: postgres, postgresql, sqlite)", scheme)
 	}
 }
+
+// NewReadOnly opens an existing database for preflight inspection without
+// applying migrations. SQLite is opened with mode=ro and query_only enabled;
+// callers must use only read methods for Postgres.
+func NewReadOnly(ctx context.Context, databaseURL string, settings PoolSettings, cipher ConfigCipher) (Store, error) {
+	scheme, err := Scheme(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	switch scheme {
+	case "postgres", "postgresql":
+		p, err := NewPostgresReadOnly(ctx, databaseURL, settings)
+		if err != nil {
+			return nil, err
+		}
+		return p.WithConfigCipher(cipher), nil
+	case "sqlite":
+		s, err := NewSQLiteReadOnly(ctx, databaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return s.WithConfigCipher(cipher), nil
+	default:
+		return nil, fmt.Errorf("unsupported DATABASE_URL scheme %q (supported schemes: postgres, postgresql, sqlite)", scheme)
+	}
+}

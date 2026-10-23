@@ -27,6 +27,7 @@
 * [value_threshold](rules/value-threshold.md)
 * [numeric_range](rules/numeric-range.md)
 * [token_event](rules/token-event.md)
+* [token_supply_change](rules/token-supply-change.md)
 * [frequency_threshold](rules/frequency-threshold.md)
 * [event_name_glob](rules/event-name-glob.md)
 * [contract_allowlist](rules/contract-allowlist.md)
@@ -44,6 +45,7 @@
 * [ntfy](channels/ntfy.md)
 * [Email (SMTP)](channels/email.md)
 * [Generic webhook](channels/webhook.md)
+* [Federation](channels/federation.md)
 * [Matrix](channels/matrix.md)
 * [PagerDuty](channels/pagerduty.md)
 * [Mattermost](channels/mattermost.md)
@@ -62,6 +64,7 @@
 * [Upgrading a running deployment](operations/upgrading.md)
 * [Capacity and scaling](operations/scaling.md)
 * [Poll priority, reorgs, retention and archiving](operations/retention-and-reorg.md)
+* [Alert retention and partitioning](operations/retention.md)
 * [Diagnosing failed alert deliveries](operations/delivery-failures.md)
 
 ## 🛠️ Reference

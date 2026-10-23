@@ -26,6 +26,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("NETWORK_PASSPHRASE", "")
 	t.Setenv("POLL_INTERVAL", "")
 	t.Setenv("HTTP_ADDR", "")
+	t.Setenv("INSTANCE_NAME", "")
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("SOURCE_MODE", "")
 	t.Setenv("SOROTRAIL_URL", "")
@@ -33,6 +34,10 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("CONFIG_ENCRYPTION_KEY", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("CHANNEL_DISABLE_AFTER_FAILURES", "")
+	t.Setenv("NOTIFY_RATE_LIMIT_SLACK_RPS", "")
+	t.Setenv("NOTIFY_RATE_LIMIT_TELEGRAM_RPS", "")
+	t.Setenv("NOTIFY_RATE_LIMIT_PAGERDUTY_RPS", "")
+	t.Setenv("NOTIFY_RATE_LIMIT_DEFAULT_RPS", "")
 	t.Setenv("WORKSPACE_TOKENS", "")
 	t.Setenv("OIDC_ISSUER", "")
 	t.Setenv("OIDC_CLIENT_ID", "")
@@ -67,6 +72,14 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Zero(t, cfg.DatabaseMaxConnIdleTime)
 	assert.Equal(t, time.Duration(0), cfg.AlertRetention)
 	assert.Equal(t, DefaultMonitorSilentAfter, cfg.MonitorSilentAfter)
+	assert.Zero(t, cfg.NotifyRateLimitSlackRPS)
+	assert.Zero(t, cfg.NotifyRateLimitTelegramRPS)
+	assert.Zero(t, cfg.NotifyRateLimitPagerDutyRPS)
+	assert.Zero(t, cfg.NotifyRateLimitDefaultRPS)
+	assert.Empty(t, cfg.InstanceName)
+	assert.Equal(t, DefaultFlappingEpisodes, cfg.FlappingEpisodes)
+	assert.Equal(t, DefaultFlappingWindow, cfg.FlappingWindow)
+	assert.Equal(t, DefaultFlappingQuietAfter, cfg.FlappingQuietAfter)
 	assert.Nil(t, cfg.ConfigEncryptionKey)
 	assert.Empty(t, cfg.APITokens)
 	// Tracing defaults to entirely off.
@@ -149,6 +162,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RPC_URL", "https://mainnet.example")
 	t.Setenv("POLL_INTERVAL", "30s")
 	t.Setenv("HTTP_ADDR", ":9999")
+	t.Setenv("INSTANCE_NAME", " beacon-a ")
 	t.Setenv("HTTP_MAX_BODY_BYTES", "4096")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("SOURCE_MODE", "sorotrail")
@@ -161,6 +175,7 @@ func TestLoadOverrides(t *testing.T) {
 	assert.Equal(t, "https://mainnet.example", cfg.RPCURL)
 	assert.Equal(t, 30*time.Second, cfg.PollInterval)
 	assert.Equal(t, ":9999", cfg.HTTPAddr)
+	assert.Equal(t, "beacon-a", cfg.InstanceName)
 	assert.Equal(t, int64(4096), cfg.HTTPMaxBodyBytes)
 	assert.Equal(t, slog.LevelDebug, cfg.LogLevel)
 	assert.Equal(t, "sorotrail", cfg.SourceMode)
@@ -183,6 +198,40 @@ func TestLoadRejectsInvalidMonitorSilentAfter(t *testing.T) {
 
 	_, err := Load()
 	assert.ErrorContains(t, err, "MONITOR_SILENT_AFTER")
+}
+
+func TestLoadFlappingSettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("FLAPPING_EPISODES", "5")
+	t.Setenv("FLAPPING_WINDOW", "20m")
+	t.Setenv("FLAPPING_QUIET_AFTER", "3m")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 5, cfg.FlappingEpisodes)
+	assert.Equal(t, 20*time.Minute, cfg.FlappingWindow)
+	assert.Equal(t, 3*time.Minute, cfg.FlappingQuietAfter)
+}
+
+func TestLoadRejectsInvalidFlappingSettings(t *testing.T) {
+	for _, tc := range []struct {
+		key   string
+		value string
+	}{
+		{key: "FLAPPING_EPISODES", value: "0"},
+		{key: "FLAPPING_WINDOW", value: "nope"},
+		{key: "FLAPPING_QUIET_AFTER", value: "0s"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://x")
+			t.Setenv("FLAPPING_EPISODES", "")
+			t.Setenv("FLAPPING_WINDOW", "")
+			t.Setenv("FLAPPING_QUIET_AFTER", "")
+			t.Setenv(tc.key, tc.value)
+			_, err := Load()
+			assert.ErrorContains(t, err, tc.key)
+		})
+	}
 }
 
 func TestLoadReadyzLagThreshold(t *testing.T) {
@@ -484,6 +533,48 @@ func TestLoadRateLimit(t *testing.T) {
 	cfg, err = Load()
 	require.NoError(t, err)
 	assert.Equal(t, 25, cfg.RateLimitBurst)
+}
+
+func TestLoadNotifyRateLimits(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("NOTIFY_RATE_LIMIT_SLACK_RPS", "7.5")
+	t.Setenv("NOTIFY_RATE_LIMIT_TELEGRAM_RPS", "42")
+	t.Setenv("NOTIFY_RATE_LIMIT_PAGERDUTY_RPS", "3.5")
+	t.Setenv("NOTIFY_RATE_LIMIT_DEFAULT_RPS", "11")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 7.5, cfg.NotifyRateLimitSlackRPS)
+	assert.Equal(t, 42.0, cfg.NotifyRateLimitTelegramRPS)
+	assert.Equal(t, 3.5, cfg.NotifyRateLimitPagerDutyRPS)
+	assert.Equal(t, 11.0, cfg.NotifyRateLimitDefaultRPS)
+
+	// Zero is accepted and means "keep the built-in default", not "disable".
+	t.Setenv("NOTIFY_RATE_LIMIT_SLACK_RPS", "0")
+	cfg, err = Load()
+	require.NoError(t, err)
+	assert.Zero(t, cfg.NotifyRateLimitSlackRPS)
+}
+
+func TestLoadRejectsBadNotifyRateLimits(t *testing.T) {
+	names := []string{
+		"NOTIFY_RATE_LIMIT_SLACK_RPS",
+		"NOTIFY_RATE_LIMIT_TELEGRAM_RPS",
+		"NOTIFY_RATE_LIMIT_PAGERDUTY_RPS",
+		"NOTIFY_RATE_LIMIT_DEFAULT_RPS",
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://x")
+			for _, other := range names {
+				t.Setenv(other, "1")
+			}
+			t.Setenv(name, "-1")
+
+			_, err := Load()
+			assert.ErrorContains(t, err, name)
+		})
+	}
 }
 
 func TestLoadRejectsBadRateLimit(t *testing.T) {

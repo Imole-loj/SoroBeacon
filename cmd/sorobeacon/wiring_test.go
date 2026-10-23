@@ -189,6 +189,42 @@ func TestWiring_ZeroChannelDisableAfterFailuresDefaults(t *testing.T) {
 	}
 }
 
+func TestWiring_NotifyRateLimitsReachDispatcher(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.NotifyRateLimitSlackRPS = 7.5
+	cfg.NotifyRateLimitTelegramRPS = 42
+	cfg.NotifyRateLimitPagerDutyRPS = 3.5
+	cfg.NotifyRateLimitDefaultRPS = 11
+
+	w, err := buildWiring(context.Background(), cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("buildWiring failed: %v", err)
+	}
+
+	want := notify.RateLimits{
+		SlackRPS:     7.5,
+		TelegramRPS:  42,
+		PagerDutyRPS: 3.5,
+		DefaultRPS:   11,
+	}
+	if got := w.dispatcher.RateLimits(); got != want {
+		t.Fatalf("dispatcher.RateLimits() = %+v, want %+v", got, want)
+	}
+}
+
+func TestWiring_ZeroNotifyRateLimitsUseDefaults(t *testing.T) {
+	cfg := defaultConfig()
+
+	w, err := buildWiring(context.Background(), cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("buildWiring failed: %v", err)
+	}
+
+	if got := w.dispatcher.RateLimits(); got != (notify.RateLimits{}) {
+		t.Fatalf("dispatcher.RateLimits() = %+v, want zero overrides", got)
+	}
+}
+
 func TestWiring_MonitorSilentAfterReachesWeb(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.MonitorSilentAfter = 12 * time.Hour
@@ -285,7 +321,7 @@ func buildWiring(ctx context.Context, cfg config.Config, log *slog.Logger) (*wir
 	// Minimal stubs for dependencies not under test.
 	st := &fakeStore{}
 	reg := rules.NewRegistry()
-	factory := notify.DefaultFactory()
+	factory := notify.DefaultFactory().WithFederationOrigin(cfg.InstanceName)
 
 	// Poller interval
 	p := poller.New(nil, st, reg, nil, cfg.PollInterval, log)
@@ -309,6 +345,12 @@ func buildWiring(ctx context.Context, cfg config.Config, log *slog.Logger) (*wir
 
 	// Dispatcher
 	dispatcher := notify.NewDispatcher(st, factory, log).
+		WithRateLimits(notify.RateLimits{
+			SlackRPS:     cfg.NotifyRateLimitSlackRPS,
+			TelegramRPS:  cfg.NotifyRateLimitTelegramRPS,
+			PagerDutyRPS: cfg.NotifyRateLimitPagerDutyRPS,
+			DefaultRPS:   cfg.NotifyRateLimitDefaultRPS,
+		}).
 		WithDisableAfterFailures(cfg.ChannelDisableAfterFailures)
 
 	// Poller options

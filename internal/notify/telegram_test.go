@@ -142,3 +142,26 @@ func TestTelegram_Send(t *testing.T) {
 		})
 	}
 }
+
+func TestTelegramCheckUsesReadOnlyGetMe(t *testing.T) {
+	called := ""
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = r.Method + " " + r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1}}`))
+	}))
+	defer ts.Close()
+
+	notifier, err := NewTelegram(json.RawMessage(fmt.Sprintf(
+		`{"bot_token":"secret_token","chat_id":"123","api_base":%q}`, ts.URL,
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := notifier.(PreflightChecker).Check(context.Background()); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if called != "GET /botsecret_token/getMe" {
+		t.Fatalf("request = %q, want GET getMe endpoint", called)
+	}
+}

@@ -63,6 +63,13 @@ func main() {
 		}
 		return
 	}
+	if len(args) > 0 && args[0] == "preflight" {
+		if err := runPreflightCLI(context.Background(), args[1:], os.Stdout); err != nil {
+			reportCLIError(os.Stderr, err)
+			os.Exit(exitCodeFor(err))
+		}
+		return
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "backup":
@@ -272,6 +279,17 @@ func newServer(ctx context.Context, cfg config.Config, log *slog.Logger, deps st
 		shutdownTelemetry(log, tel)
 		return nil, err
 	}
+	stateCtx, cancelState := context.WithTimeout(ctx, startupNetworkTimeout)
+	currentMigration, latestMigration, dirtyMigration, err := store.MigrationState(stateCtx, cfg.DatabaseURL)
+	cancelState()
+	if err != nil {
+		shutdownTelemetry(log, tel)
+		return nil, fmt.Errorf("verify database migration state: %w", err)
+	}
+	if dirtyMigration || currentMigration != latestMigration {
+		shutdownTelemetry(log, tel)
+		return nil, fmt.Errorf("verify database migration state: current=%d latest=%d dirty=%t", currentMigration, latestMigration, dirtyMigration)
+	}
 	// Metrics are built before the store now, because the store labels every
 	// routed read with the pool that served it. Nothing else about the order
 	// changes: m is still the same instance the poller, the dispatcher and the
@@ -335,6 +353,13 @@ func newServer(ctx context.Context, cfg config.Config, log *slog.Logger, deps st
 		if err := pe.EnsureAlertPartitions(ctx, time.Now().UTC(), 3); err != nil {
 			return nil, err
 		}
+		checker, ok := st.(store.PartitionRunwayChecker)
+		if !ok {
+			return nil, errors.New("partition backend does not support runway checks")
+		}
+		if err := checker.CheckAlertPartitionRunway(ctx, time.Now().UTC(), 3); err != nil {
+			return nil, fmt.Errorf("verify alert partition runway: %w", err)
+		}
 	}
 
 	// Tenancy. The configured credentials name the workspaces this instance
@@ -392,21 +417,48 @@ func newServer(ctx context.Context, cfg config.Config, log *slog.Logger, deps st
 			}
 			return records, nil
 		})))
-	factory := notify.DefaultFactory()
+	factory := notify.DefaultFactory().WithFederationOrigin(cfg.InstanceName)
 	// External secrets: when a provider is configured, ${secret:...}
 	// references in channel configs resolve when a notifier is built. The
 	// stored config keeps the reference.
 	if resolver := buildSecretResolver(cfg, log); resolver != nil {
 		factory.WithSecrets(resolver)
 	}
+	validationCtx, cancelValidation := context.WithTimeout(ctx, startupNetworkTimeout)
+	channels, err := st.ListChannels(workspace.WithSystem(validationCtx), false)
+	if err != nil {
+		cancelValidation()
+		return nil, fmt.Errorf("validate channel configurations: %w", err)
+	}
+	var channelErrors []error
+	for _, channel := range channels {
+		if _, err := validateChannelConfiguration(validationCtx, factory, channel, cfg.SecretsProvider); err != nil {
+			channelErrors = append(channelErrors, fmt.Errorf("channel %d (%s): %s", channel.ID, channel.Type, redactPreflightError(err, channelConfigValues(channel.Config)...)))
+		}
+	}
+	cancelValidation()
+	if len(channelErrors) > 0 {
+		return nil, fmt.Errorf("validate channel configurations: %w", errors.Join(channelErrors...))
+	}
 	// Channel health: delivery outcomes are folded into each channel so a
 	// revoked token surfaces as a broken channel instead of as silence. The
 	// threshold is off unless the operator sets it — auto-disabling a channel
 	// is a destructive answer to a temporary problem.
 	dispatcher := notify.NewDispatcher(st, factory, log).
+		WithRateLimits(notify.RateLimits{
+			SlackRPS:     cfg.NotifyRateLimitSlackRPS,
+			TelegramRPS:  cfg.NotifyRateLimitTelegramRPS,
+			PagerDutyRPS: cfg.NotifyRateLimitPagerDutyRPS,
+			DefaultRPS:   cfg.NotifyRateLimitDefaultRPS,
+		}).
 		WithMetrics(m).
 		WithDigestQueue(st).
-		WithDisableAfterFailures(cfg.ChannelDisableAfterFailures)
+		WithDisableAfterFailures(cfg.ChannelDisableAfterFailures).
+		WithFlapping(alerts.FlappingConfig{
+			Episodes:   cfg.FlappingEpisodes,
+			Window:     cfg.FlappingWindow,
+			QuietAfter: cfg.FlappingQuietAfter,
+		})
 	enricher, err := alerts.NewEnricher(cfg.AlertEnrichmentURL, cfg.AlertEnrichmentTimeout, cfg.AlertEnrichmentCacheTTL)
 	if err != nil {
 		return nil, err
@@ -831,7 +883,7 @@ func runBackfill(args []string) error {
 	}
 
 	registry := rules.NewRegistry()
-	dispatcher := notify.NewDispatcher(st, notify.DefaultFactory(), log)
+	dispatcher := notify.NewDispatcher(st, notify.DefaultFactory().WithFederationOrigin(cfg.InstanceName), log)
 	ingestor := poller.NewIngestor(st, registry, dispatcher, log)
 	job := backfill.New(src, st, registry, ingestor, log)
 
@@ -908,6 +960,7 @@ func verifyNetworkEndpoints(ctx context.Context, log *slog.Logger, client *stell
 	ctx, cancel := context.WithTimeout(ctx, startupNetworkTimeout)
 	defer cancel()
 
+	var mismatches []error
 	for _, ep := range client.Endpoints() {
 		net, err := ep.Client.GetNetwork(ctx)
 		if err != nil {
@@ -915,10 +968,10 @@ func verifyNetworkEndpoints(ctx context.Context, log *slog.Logger, client *stell
 			continue
 		}
 		if err := config.VerifyPassphrase(configured, net.Passphrase); err != nil {
-			return fmt.Errorf("rpc endpoint %s: %w", ep.URL, err)
+			mismatches = append(mismatches, fmt.Errorf("rpc endpoint %s: %w", ep.URL, err))
 		}
 	}
-	return nil
+	return errors.Join(mismatches...)
 }
 
 // startupHealthTimeout bounds the one-off health check logged at startup,

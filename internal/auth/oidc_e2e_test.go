@@ -151,6 +151,71 @@ func TestOIDCEndToEndWithWorkspaceClaim(t *testing.T) {
 	}
 }
 
+// A provider that maps roles gives each identity the reach it maps, and the
+// session the identity signs in with carries that role.
+func TestOIDCEndToEndWithRoleClaim(t *testing.T) {
+	idp := oidctest.New(t)
+	p := newTestProvider(t, idp, func(cfg *OIDCConfig) {
+		cfg.RoleClaim = "soro_role"
+	})
+	a := New(nil, 0).WithOIDC(p)
+
+	q, state, code := oidcLogin(t, p, idp, "/dashboard")
+	respond(t, idp, code, func(c map[string]any) {
+		c["soro_role"] = "viewer"
+		c["email"] = "alice@example.com"
+	})
+
+	identity, _, err := complete(t, p, q, state)
+	if err != nil {
+		t.Fatalf("CompleteLogin failed: %v", err)
+	}
+	if identity.Role != RoleViewer {
+		t.Fatalf("role = %v, want a viewer", identity.Role)
+	}
+
+	sessionID := a.LoginOIDC(identity)
+	role, ok := a.SessionRole(sessionID)
+	if !ok || role != RoleViewer {
+		t.Fatalf("session role = %v (%v), want a viewer", role, ok)
+	}
+
+	// An identity the provider does not classify keeps the default: the
+	// operator configured the mapping, and a claim naming no known role is
+	// not a reason to lock a user out of an instance they can sign in to.
+	q2, state2, code2 := oidcLogin(t, p, idp, "/dashboard")
+	respond(t, idp, code2, func(c map[string]any) {
+		c["soro_role"] = "wizard"
+		c["email"] = "bob@example.com"
+	})
+	identity2, _, err := complete(t, p, q2, state2)
+	if err != nil {
+		t.Fatalf("CompleteLogin failed: %v", err)
+	}
+	if identity2.Role != RoleAdmin {
+		t.Fatalf("role = %v, want the default admin", identity2.Role)
+	}
+}
+
+// Without a role claim every identity that signs in is an admin, which is
+// what a single-operator deployment wants.
+func TestOIDCEndToEndWithoutRoleClaimIsAdmin(t *testing.T) {
+	idp := oidctest.New(t)
+	p := newTestProvider(t, idp, nil)
+
+	q, state, code := oidcLogin(t, p, idp, "/dashboard")
+	respond(t, idp, code, func(c map[string]any) {
+		c["email"] = "alice@example.com"
+	})
+	identity, _, err := complete(t, p, q, state)
+	if err != nil {
+		t.Fatalf("CompleteLogin failed: %v", err)
+	}
+	if identity.Role != RoleAdmin {
+		t.Fatalf("role = %v, want an admin", identity.Role)
+	}
+}
+
 func TestOIDCEndToEndConcurrentLogins(t *testing.T) {
 	// Two users logging in simultaneously should not interfere with each
 	// other's state, nonce, or PKCE verifier. Each gets their own provider

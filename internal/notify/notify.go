@@ -66,6 +66,11 @@ type Alert struct {
 	// ledger, no transaction and no matching event — reporting those as empty
 	// fields reads like a broken alert rather than a contract gone quiet.
 	Silence time.Duration `json:"silence,omitempty"`
+	// FederationOrigin names the instance an alert was forwarded from. It is
+	// empty for a local alert, and it is what tells a forwarded alert apart
+	// from a local one in the channels that key on the alert's identity: a
+	// forwarded alert has no local rule id to key on.
+	FederationOrigin string `json:"federation_origin,omitempty"`
 }
 
 // Notifier sends one alert to one destination. Implementations should
@@ -73,6 +78,13 @@ type Alert struct {
 // response_snippet (no secrets).
 type Notifier interface {
 	Send(ctx context.Context, a Alert) error
+}
+
+// PreflightChecker verifies a notifier's remote configuration without sending
+// an alert. A channel that cannot offer a non-delivering probe should not
+// implement this interface.
+type PreflightChecker interface {
+	Check(ctx context.Context) error
 }
 
 // Constructor builds a Notifier from a channel's JSON config.
@@ -83,8 +95,9 @@ type Constructor func(config json.RawMessage) (Notifier, error)
 // config before it runs, so all channel types support external secrets
 // without individual changes.
 type Factory struct {
-	constructors map[string]Constructor
-	secrets      *secrets.Resolver
+	constructors     map[string]Constructor
+	secrets          *secrets.Resolver
+	federationOrigin string
 }
 
 // Channel type names understood by DefaultFactory.
@@ -125,7 +138,7 @@ func DefaultFactory() *Factory {
 	f.Register(TypeNtfy, NewNtfy)
 	f.Register(TypeMatrix, NewMatrix)
 	f.Register(TypePagerDuty, NewPagerDuty)
-	f.Register(TypeFederation, NewFederation)
+	f.Register(TypeFederation, f.newFederation)
 	f.Register(TypeTwilio, NewTwilio)
 	f.Register(TypeSignal, NewSignal)
 	f.Register(TypeWebex, NewWebex)
@@ -167,6 +180,15 @@ func (f *Factory) WithSecrets(r *secrets.Resolver) *Factory {
 	return f
 }
 
+// WithFederationOrigin sets the sending instance's identity, stamped as the
+// origin on every federated alert. An empty origin leaves federation
+// fail-closed: creating a federation channel returns an actionable error
+// instead of sending payloads the receiving instance must reject.
+func (f *Factory) WithFederationOrigin(origin string) *Factory {
+	f.federationOrigin = strings.TrimSpace(origin)
+	return f
+}
+
 // InvalidateSecretCache drops cached secret values. The API calls it when a
 // channel is created, updated or deleted so a corrected or rotated secret
 // takes effect on the next delivery instead of waiting for the TTL.
@@ -180,13 +202,20 @@ func (f *Factory) InvalidateSecretCache() {
 // resolved against the attached resolver, if any; the resolved copy stays in
 // memory with the notifier and is never written back, logged or returned.
 func (f *Factory) New(channelType string, config json.RawMessage) (Notifier, error) {
+	return f.NewContext(context.Background(), channelType, config)
+}
+
+// NewContext builds a notifier while resolving secrets with ctx. It is useful
+// for bounded preflight checks; resolved values remain only in the returned
+// notifier and are never written back to channel config.
+func (f *Factory) NewContext(ctx context.Context, channelType string, config json.RawMessage) (Notifier, error) {
 	c, ok := f.constructors[channelType]
 	if !ok {
 		return nil, fmt.Errorf("unknown channel type %q (registered: %v)", channelType, f.Types())
 	}
 	resolved := config
 	if f.secrets != nil && len(config) > 0 {
-		r, err := f.secrets.ResolveConfig(context.Background(), config)
+		r, err := f.secrets.ResolveConfig(ctx, config)
 		if err != nil {
 			return nil, err
 		}

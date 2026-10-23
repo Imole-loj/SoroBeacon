@@ -32,6 +32,9 @@ const (
 	// DefaultMonitorSilentAfter is how long since last_matched_at before
 	// the monitors list treats a monitor as silent.
 	DefaultMonitorSilentAfter = 24 * time.Hour
+	DefaultFlappingEpisodes   = 3
+	DefaultFlappingWindow     = 15 * time.Minute
+	DefaultFlappingQuietAfter = 2 * time.Minute
 	// DefaultReorgTrackingWindow is how many recent ledger hashes the poller
 	// keeps for reorg detection. 128 ledgers is roughly ten minutes on
 	// Stellar and a few getLedgers pages per cycle — cheap, and deep enough
@@ -132,6 +135,11 @@ type Config struct {
 	// call the API cross-origin (CORS_ALLOWED_ORIGINS, comma-separated).
 	// Empty disables CORS; the dashboard is same-origin and never needs it.
 	CORSAllowedOrigins []string
+	// InstanceName is this deployment's stable identity (INSTANCE_NAME). It is
+	// stamped as the origin on federated alerts and must be unique across the
+	// sending instances. Empty is fine unless a federation channel is created;
+	// the channel factory then fails closed with an actionable error.
+	InstanceName string
 	// HTTPAddr is the listen address for the API and dashboard.
 	HTTPAddr string
 	// HTTPMaxBodyBytes is the maximum request body size accepted by API
@@ -165,6 +173,13 @@ type Config struct {
 	// MonitorSilentAfter is how long since last_matched_at before the
 	// dashboard marks a monitor silent. Default 24h.
 	MonitorSilentAfter time.Duration
+	// FlappingEpisodes is the number of alert episodes in FlappingWindow
+	// that trigger notification damping.
+	FlappingEpisodes int
+	// FlappingWindow is the alert-history window used to count episodes.
+	FlappingWindow time.Duration
+	// FlappingQuietAfter is the minimum gap between episodes.
+	FlappingQuietAfter time.Duration
 	// OTLP is the OpenTelemetry tracing configuration. Endpoint empty (the
 	// default, OTLP_ENDPOINT unset) disables tracing entirely: no exporter,
 	// no exporter goroutines, no measurable overhead — spans collapse to
@@ -218,17 +233,21 @@ type Config struct {
 	// GraphQL is the GraphQL endpoint configuration.
 	GraphQL GraphQLConfig
 
-	// NotifyRateLimitSlackRPS is the max requests per second for Slack channels
-	// (NOTIFY_RATE_LIMIT_SLACK_RPS, default 1.0, citing Slack API tier 2 / webhooks guidelines ~1 msg/sec).
+	// NotifyRateLimitSlackRPS overrides the Slack delivery rate
+	// (NOTIFY_RATE_LIMIT_SLACK_RPS). Zero keeps the built-in notifier default;
+	// see notify.RateLimits.
 	NotifyRateLimitSlackRPS float64
-	// NotifyRateLimitTelegramRPS is the max requests per second for Telegram channels
-	// (NOTIFY_RATE_LIMIT_TELEGRAM_RPS, default 30.0, citing Telegram Bot API limit of 30 msg/sec).
+	// NotifyRateLimitTelegramRPS overrides the Telegram delivery rate
+	// (NOTIFY_RATE_LIMIT_TELEGRAM_RPS). Zero keeps the built-in notifier
+	// default; see notify.RateLimits.
 	NotifyRateLimitTelegramRPS float64
-	// NotifyRateLimitPagerDutyRPS is the max requests per second for PagerDuty channels
-	// (NOTIFY_RATE_LIMIT_PAGERDUTY_RPS, default 2.0, citing PagerDuty Events API v2 rate limit ~2 requests/sec).
+	// NotifyRateLimitPagerDutyRPS overrides the PagerDuty delivery rate
+	// (NOTIFY_RATE_LIMIT_PAGERDUTY_RPS). Zero keeps the built-in notifier
+	// default; see notify.RateLimits.
 	NotifyRateLimitPagerDutyRPS float64
-	// NotifyRateLimitDefaultRPS is the default max requests per second for any other channel
-	// (NOTIFY_RATE_LIMIT_DEFAULT_RPS, default 5.0).
+	// NotifyRateLimitDefaultRPS overrides the fallback delivery rate for
+	// channel types without a specific limit (NOTIFY_RATE_LIMIT_DEFAULT_RPS).
+	// Zero keeps the built-in notifier default; see notify.RateLimits.
 	NotifyRateLimitDefaultRPS float64
 }
 
@@ -293,11 +312,15 @@ func Load() (Config, error) {
 		RPCURL:             net.RPCURL,
 		RPCURLs:            net.RPCURLs,
 		DatabaseURL:        lookupConfigValue("DATABASE_URL", fileValues),
+		InstanceName:       strings.TrimSpace(lookupConfigValue("INSTANCE_NAME", fileValues)),
 		PollInterval:       DefaultPollInterval,
 		HTTPAddr:           valueOrFallback("HTTP_ADDR", fileValues, DefaultHTTPAddr),
 		HTTPMaxBodyBytes:   DefaultHTTPMaxBodyBytes,
 		LogLevel:           slog.LevelInfo,
 		MonitorSilentAfter: DefaultMonitorSilentAfter,
+		FlappingEpisodes:   DefaultFlappingEpisodes,
+		FlappingWindow:     DefaultFlappingWindow,
+		FlappingQuietAfter: DefaultFlappingQuietAfter,
 		// Detection is on by default; confirmation depth off, so a monitor
 		// alerts exactly as soon as it did before this feature.
 		ReorgTrackingWindow:    DefaultReorgTrackingWindow,
@@ -527,6 +550,27 @@ func Load() (Config, error) {
 			return cfg, fmt.Errorf("invalid ALERT_RETENTION %q: %w", v, err)
 		}
 		cfg.AlertRetention = d
+	}
+	if v := lookupConfigValue("FLAPPING_EPISODES", fileValues); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("invalid FLAPPING_EPISODES %q: must be a positive integer", v)
+		}
+		cfg.FlappingEpisodes = n
+	}
+	if v := lookupConfigValue("FLAPPING_WINDOW", fileValues); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return cfg, fmt.Errorf("invalid FLAPPING_WINDOW %q: must be a positive duration", v)
+		}
+		cfg.FlappingWindow = d
+	}
+	if v := lookupConfigValue("FLAPPING_QUIET_AFTER", fileValues); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return cfg, fmt.Errorf("invalid FLAPPING_QUIET_AFTER %q: must be a positive duration", v)
+		}
+		cfg.FlappingQuietAfter = d
 	}
 	cfg.AlertEnrichmentURL = strings.TrimSpace(lookupConfigValue("ALERT_ENRICHMENT_URL", fileValues))
 	cfg.AlertEnrichmentTimeout = 2 * time.Second

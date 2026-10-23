@@ -94,6 +94,10 @@ func exitCodeFor(err error) int {
 	if errors.As(err, &usage) {
 		return exitUsage
 	}
+	var preflight *preflightExitError
+	if errors.As(err, &preflight) {
+		return preflight.code
+	}
 	return exitFailure
 }
 

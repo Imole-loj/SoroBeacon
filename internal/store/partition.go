@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,12 @@ type PartitionEnsurer interface {
 	// consecutive months starting at the month containing `from`. It is
 	// idempotent and safe to call on every start and prune pass.
 	EnsureAlertPartitions(ctx context.Context, from time.Time, months int) error
+}
+
+// PartitionRunwayChecker reports whether the requested upcoming alert
+// partitions already exist. Backends without partitioning do not implement it.
+type PartitionRunwayChecker interface {
+	CheckAlertPartitionRunway(ctx context.Context, from time.Time, months int) error
 }
 
 // PartitionPruner drops whole alerts partitions that are entirely older than
@@ -91,6 +98,41 @@ func (p *Postgres) alertPartitions(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// CheckAlertPartitionRunway inspects, but never creates, the monthly
+// partitions needed from `from` through the requested runway.
+func (p *Postgres) CheckAlertPartitionRunway(ctx context.Context, from time.Time, months int) error {
+	if months <= 0 {
+		return nil
+	}
+	existing, err := p.alertPartitions(ctx)
+	if err != nil {
+		return err
+	}
+	have := make(map[string]bool, len(existing))
+	for _, name := range existing {
+		have[name] = true
+	}
+	var missing []string
+	for _, name := range requiredAlertPartitions(from, months) {
+		if !have[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing alert partitions: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func requiredAlertPartitions(from time.Time, months int) []string {
+	names := make([]string, 0, months)
+	start := monthStart(from)
+	for i := 0; i < months; i++ {
+		names = append(names, alertPartitionName(start.AddDate(0, i, 0)))
+	}
+	return names
+}
+
 // EnsureAlertPartitions creates the monthly partitions for [from, from+months).
 // A month that already has a partition is skipped. When the default partition
 // holds rows for a month about to get a real partition, the default is
@@ -120,11 +162,9 @@ func (p *Postgres) EnsureAlertPartitions(ctx context.Context, from time.Time, mo
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
-	start := monthStart(from)
-	for i := 0; i < months; i++ {
-		begin := start.AddDate(0, i, 0)
+	for _, name := range requiredAlertPartitions(from, months) {
+		begin, _, _ := alertPartitionBounds(name)
 		end := begin.AddDate(0, 1, 0)
-		name := alertPartitionName(begin)
 		if have[name] {
 			continue
 		}

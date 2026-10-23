@@ -184,6 +184,48 @@ func TestTraceIDHelperIsHex32(t *testing.T) {
 	}
 }
 
+func TestNewWithNoopTracerStaysNoop(t *testing.T) {
+	p := New(noopTracer())
+	require.NotNil(t, p, "New must always return a usable provider")
+
+	ctx, span := p.StartSpan(context.Background(), "stage")
+	require.NotNil(t, ctx)
+	require.NotNil(t, span)
+	assert.False(t, span.SpanContext().IsValid(),
+		"a provider built from the no-op tracer must not record spans")
+	span.End()
+
+	assert.NoError(t, p.Shutdown(context.Background()),
+		"a provider with no SDK provider has nothing to flush")
+}
+
+func TestNoopSpanIsSafeToUse(t *testing.T) {
+	span := NoopSpan()
+	require.NotNil(t, span, "call sites use the result without a nil check")
+	assert.False(t, span.IsRecording())
+	assert.Empty(t, SpanID(span), "a no-op span has no trace id to log")
+
+	// Every method a real span supports must be safe here: NoopSpan exists
+	// so call sites never have to branch on whether tracing is enabled.
+	span.SetAttributes(attribute.String("key", "value"))
+	span.AddEvent("checkpoint")
+	RecordError(span, assert.AnError)
+	span.SetStatus(codes.Error, "failed")
+	span.End()
+}
+
+func TestSpanIDReturnsTraceIDForRecordedSpan(t *testing.T) {
+	r := newRecorder(t)
+	_, span := r.p.StartSpan(context.Background(), "stage")
+	require.True(t, span.SpanContext().IsValid())
+
+	want := span.SpanContext().TraceID().String()
+	assert.Len(t, want, 32)
+	assert.Equal(t, want, SpanID(span),
+		"the logged id must be the trace id operators can find in the collector")
+	span.End()
+}
+
 // --- helpers shared by the tests above ---
 
 func attributeValue(attrs []attribute.KeyValue, key string) (string, bool) {

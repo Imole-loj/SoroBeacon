@@ -149,6 +149,29 @@ Complete, valid params document:
 }
 ```
 
+## token_supply_change
+
+Matches SEP-41 `mint` and `burn` events, optionally filtered by direction and by a minimum i128 amount.
+
+| Param | JSON type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `direction` | string | no | `any` | Filter events by direction: `mint`, `burn`, or `any` (default `any`) |
+| `min_amount` | string | no | unset (no bound) | Inclusive lower bound on the i128 amount, as a decimal string. |
+
+All filters combine with AND. Omitted filters don't constrain. Amount params
+must be decimal integers (a leading `-` is accepted by the parser, though
+real token amounts are non-negative). `set_admin` — which carries no
+value — rejects them outright.
+
+Complete, valid params document:
+
+```json
+{
+  "direction": "any",
+  "min_amount": "1000000"
+}
+```
+
 ## topic\_regex
 
 RE2 pattern match against a decoded topic — at a position, or any topic.

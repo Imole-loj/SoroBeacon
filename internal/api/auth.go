@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/sorotrail/sorobeacon/internal/auth"
+	"github.com/sorotrail/sorobeacon/internal/reqid"
 	"github.com/sorotrail/sorobeacon/internal/workspace"
 )
 
@@ -58,60 +59,25 @@ func AuthMiddleware(a *auth.Authenticator, log *slog.Logger) func(http.Handler) 
 				}
 			}
 			ctx := auth.WithPrincipal(workspace.With(r.Context(), principal.Workspace), principal)
+			// The role is resolved from the credential that was just resolved,
+			// so the role check downstream does not read the token row again.
+			ctx = auth.WithRole(ctx, a.RoleForPrincipal(r, principal))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// RoleMiddleware returns middleware that enforces role-based access control based on endpoint methods/paths.
-func RoleMiddleware(a *auth.Authenticator) func(http.Handler) http.Handler {
-	if !a.Enabled() {
-		return func(next http.Handler) http.Handler { return next }
-	}
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isProbePath(r.URL.Path) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			required := auth.RoleViewer
-			switch r.Method {
-			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-				required = auth.RoleEditor
-			}
-			role, _ := a.RoleForRequest(r)
-			if !role.HasPermission(required) {
-				writeErr(w, r, http.StatusForbidden, "forbidden")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// RequireRole returns middleware that enforces minimum role permissions (fail-closed).
-func RequireRole(required auth.Role) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authObj, ok := r.Context().Value(authContextKey).(*auth.Authenticator)
-			// If auth is not in context, fall back to checking if global auth permits or fail-closed if unauthenticated
-			var role auth.Role
-			if ok && authObj != nil {
-				role, _ = authObj.RoleForRequest(r)
-			} else {
-				role = auth.RoleUnknown
-			}
-			if !role.HasPermission(required) {
-				writeErr(w, r, http.StatusForbidden, "forbidden")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-var authContextKey = &contextKey{"auth"}
-
-type contextKey struct {
-	name string
+// denyRole answers a request whose credential is not allowed to call the
+// route it asked for.
+//
+// The message says what the caller needs and nothing about the credentials
+// that exist: the required role is not a secret, and a caller holding the
+// wrong one needs to know which one to ask for.
+func (s *Server) denyRole(w http.ResponseWriter, r *http.Request, required auth.Role) {
+	s.log.Warn("role denied",
+		"request_id", reqid.From(r),
+		"method", r.Method,
+		"path", routePath(r),
+		"required_role", required.String())
+	writeErr(w, r, http.StatusForbidden, "forbidden")
 }

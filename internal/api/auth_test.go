@@ -116,6 +116,18 @@ func TestAuthRejectsWrongToken(t *testing.T) {
 	}
 }
 
+// TestAuthRejectsLegacyAdminLiterals pins the removed RoleEnforcer's
+// backdoor: "admin" and "token-admin" were mapped to RoleAdmin without being
+// configured. They must be treated like any other unknown credential.
+func TestAuthRejectsLegacyAdminLiterals(t *testing.T) {
+	for _, token := range []string{"admin", "token-admin", "editor", "token-editor"} {
+		res := get(t, authServer(testToken), "/version", map[string]string{"Authorization": "Bearer " + token})
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("token %q = %d, want 401", token, res.StatusCode)
+		}
+	}
+}
+
 func TestAuthProtectsDataRoutesNotJustVersion(t *testing.T) {
 	res := get(t, authServer(testToken), "/monitors", nil)
 	assertJSONErrorEnvelope(t, res, http.StatusUnauthorized)

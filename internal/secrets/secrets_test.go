@@ -190,6 +190,23 @@ func TestResolveConfigInvalidJSONPassesThrough(t *testing.T) {
 	}
 }
 
+func TestResolveConfigReportsEveryFailedReference(t *testing.T) {
+	r := NewResolver().WithTTL(0)
+	raw := json.RawMessage(`{"first":"${secret:missing:one}","nested":["${secret:missing:two}"]}`)
+	_, err := r.ResolveConfig(context.Background(), raw)
+	if err == nil {
+		t.Fatal("expected secret resolution failures")
+	}
+	for _, reference := range []string{"${secret:missing:one}", "${secret:missing:two}"} {
+		if !strings.Contains(err.Error(), reference) {
+			t.Errorf("combined error %q does not include reference %q", err, reference)
+		}
+	}
+	if strings.Contains(err.Error(), "resolved-secret-value") {
+		t.Errorf("combined error leaked a secret value: %v", err)
+	}
+}
+
 func TestEnvProvider(t *testing.T) {
 	p := &EnvProvider{Getenv: func(k string) string {
 		if k == "SLACK_WEBHOOK_URL" {
@@ -209,5 +226,99 @@ func TestEnvProvider(t *testing.T) {
 	}
 	if _, err := r.ResolveString(context.Background(), "${secret:env:MISSING}"); err == nil {
 		t.Fatal("expected an error for an unset variable")
+	}
+}
+
+func TestIsReference(t *testing.T) {
+	tests := []struct {
+		in string
+		ok bool
+	}{
+		{"${secret:env:SLACK_WEBHOOK_URL}", true},
+		{"${secret:vault:kv/data/sorobeacon#slack_token}", true},
+		{"${secret:fake:xyz}", true},
+		{"plain-literal", false},
+		{"", false},
+		{"https://example.com", false},
+		{"${secret:env:X://Y}", true},
+	}
+	for _, tt := range tests {
+		ok := IsReference(tt.in)
+		if ok != tt.ok {
+			t.Errorf("IsReference(%q) = %v; want %v", tt.in, ok, tt.ok)
+		}
+	}
+}
+
+func TestNewEnvProvider(t *testing.T) {
+	p := &EnvProvider{Getenv: func(k string) string {
+		if k == "TEST_VAR" {
+			return "test-value"
+		}
+		return ""
+	}}
+	r := NewResolver(p)
+	got, err := r.ResolveString(context.Background(), "${secret:env:TEST_VAR}")
+	if err != nil || got != "test-value" {
+		t.Fatalf("env resolve = (%q, %v)", got, err)
+	}
+	// An unset variable should return an error, not an empty string.
+	if _, err := r.ResolveString(context.Background(), "${secret:env:NONEXISTENT}"); err == nil {
+		t.Fatal("expected an error for an unset variable")
+	}
+}
+
+func TestWithTTL(t *testing.T) {
+	fp := &fakeProvider{values: map[string]string{"path#key": "value"}}
+	r := NewResolver(fp)
+
+	// Default TTL should be 5 minutes.
+	schemes := r.Schemes()
+	if !contains(schemes, "fake") {
+		t.Fatal("expected 'fake' in schemes")
+	}
+
+	// Test WithTTL sets the cache lifetime.
+	r2 := r.WithTTL(10 * time.Second)
+	if r2.ttl != 10*time.Second {
+		t.Fatalf("WithTTL did not set ttl to 10s, got %v", r2.ttl)
+	}
+
+	// Test that a non-positive TTL disables caching.
+	r3 := r.WithTTL(-1 * time.Second)
+	if r3.ttl != -1*time.Second {
+		t.Fatalf("WithTTL(-1) did not set ttl to -1s")
+	}
+	r4 := r.WithTTL(0)
+	if r4.ttl != 0 {
+		t.Fatalf("WithTTL(0) did not disable caching")
+	}
+}
+
+func contains(s []string, e string) bool {
+	for _, v := range s {
+		if v == e {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSchemes(t *testing.T) {
+	fp := &fakeProvider{values: map[string]string{"path#key": "value"}}
+	r := NewResolver(fp)
+	schemes := r.Schemes()
+	if !contains(schemes, "fake") {
+		t.Fatal("expected 'fake' in schemes")
+	}
+	if len(schemes) != 1 {
+		t.Fatalf("expected 1 scheme, got %d", len(schemes))
+	}
+}
+
+func TestVaultProviderScheme(t *testing.T) {
+	provider := NewVaultProvider("https://vault.example:8200", "token", "namespace")
+	if provider.Scheme() != "vault" {
+		t.Fatalf("expected Scheme() = \"vault\", got %q", provider.Scheme())
 	}
 }

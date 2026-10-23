@@ -443,12 +443,20 @@ func (a *Authenticator) SessionWorkspace(id string) (workspace.ID, bool) {
 // LoginOIDC mints a dashboard session for an identity the provider verified.
 // The session is unrestricted, like one minted from a static token: a cookie
 // carries no scope list, and the workspace comes from the identity's mapping
-// rather than from anything the browser sent.
+// rather than from anything the browser sent. The role is the identity's too,
+// so a provider that maps roles gives a signed-in browser exactly the reach
+// it maps.
 func (a *Authenticator) LoginOIDC(id *Identity) string {
 	if a == nil || id == nil {
 		return ""
 	}
-	return a.newSessionFor(RoleAdmin, id.Workspace)
+	role := id.Role
+	if role == RoleUnknown {
+		// An identity with no role is an operator: the provider vouched for
+		// it, and the alternative is a session that can do nothing.
+		role = RoleAdmin
+	}
+	return a.newSessionFor(role, id.Workspace)
 }
 
 // Principal resolves a request to its caller. It is the one place that turns a
@@ -532,11 +540,35 @@ func (a *Authenticator) Authenticated(r *http.Request) bool {
 }
 
 // RoleForRequest determines the effective Role for an HTTP request.
+//
+// The three credentials answer it differently. A static token carries its
+// role in its suffix, and a dashboard session carries the role of the
+// credential that signed in. A database-backed token carries no role of its
+// own: its scopes are the grant, and the role is the coarsest one those
+// scopes allow (RoleForScopes).
+//
+// With no credential configured the request is an admin one: an unconfigured
+// instance is open, and an open instance is an admin instance.
 func (a *Authenticator) RoleForRequest(r *http.Request) (Role, bool) {
+	if r == nil {
+		return RoleUnknown, false
+	}
 	if !a.Enabled() {
 		return RoleAdmin, true
 	}
 	if token, ok := Bearer(r.Header.Get("Authorization")); ok {
+		if strings.HasPrefix(token, TokenPrefix) {
+			// A database-backed token. The manager resolves it to its row,
+			// and the scopes on that row are the whole grant.
+			if a.scoped == nil {
+				return RoleUnknown, false
+			}
+			p, err := a.scoped.Authenticate(r.Context(), token)
+			if err != nil {
+				return RoleUnknown, false
+			}
+			return RoleForScopes(p.Scopes()), true
+		}
 		if role, ok := a.verifyToken(token); ok {
 			return role, true
 		}
@@ -545,4 +577,28 @@ func (a *Authenticator) RoleForRequest(r *http.Request) (Role, bool) {
 		return role, true
 	}
 	return RoleUnknown, false
+}
+
+// RoleForPrincipal is the role of an already-resolved caller.
+//
+// It exists so that a request resolves its credential once. A scoped token's
+// row is read from the database, and reading it a second time for the role
+// would double that cost on every API call; here the role comes from the
+// scopes the principal already carries. An unrestricted credential — a static
+// token or a session — is resolved from the in-memory tables either way.
+func (a *Authenticator) RoleForPrincipal(r *http.Request, p *Principal) Role {
+	if p == nil {
+		return RoleUnknown
+	}
+	if p.Restricted() {
+		return RoleForScopes(p.Scopes())
+	}
+	role, _ := a.RoleForRequest(r)
+	return role
+}
+
+// SessionRole is the role a live session carries. It is the session's own
+// role, inherited from the credential that signed in.
+func (a *Authenticator) SessionRole(id string) (Role, bool) {
+	return a.getSessionRole(id)
 }

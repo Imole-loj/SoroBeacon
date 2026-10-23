@@ -109,11 +109,15 @@ HORIZON_URL: {{ .Values.config.horizonUrl | quote }}
 GRAPHQL_PLAYGROUND: {{ .Values.config.graphqlPlayground | toString | quote }}
 GRAPHQL_MAX_DEPTH: {{ .Values.config.graphqlMaxDepth | quote }}
 GRAPHQL_MAX_COMPLEXITY: {{ .Values.config.graphqlMaxComplexity | quote }}
+INSTANCE_NAME: {{ .Values.config.instanceName | quote }}
 HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
 HTTP_MAX_BODY_BYTES: {{ .Values.config.httpMaxBodyBytes | int64 | quote }}
 POLL_INTERVAL: {{ .Values.config.pollInterval | quote }}
 LOG_LEVEL: {{ .Values.config.logLevel | quote }}
 MONITOR_SILENT_AFTER: {{ .Values.config.monitorSilentAfter | quote }}
+FLAPPING_EPISODES: {{ .Values.config.flappingEpisodes | int64 | quote }}
+FLAPPING_WINDOW: {{ .Values.config.flappingWindow | quote }}
+FLAPPING_QUIET_AFTER: {{ .Values.config.flappingQuietAfter | quote }}
 READYZ_LAG_THRESHOLD: {{ .Values.config.readyzLagThreshold | int64 | quote }}
 CHANNEL_DISABLE_AFTER_FAILURES: {{ .Values.config.channelDisableAfterFailures | int64 | quote }}
 NETWORKS: {{ .Values.config.networks | quote }}
@@ -124,6 +128,7 @@ OIDC_SCOPES: {{ .Values.oidc.scopes | quote }}
 OIDC_ALLOWED_DOMAINS: {{ .Values.oidc.allowedDomains | quote }}
 OIDC_WORKSPACE: {{ .Values.oidc.workspace | quote }}
 OIDC_WORKSPACE_CLAIM: {{ .Values.oidc.workspaceClaim | quote }}
+OIDC_ROLE_CLAIM: {{ .Values.oidc.roleClaim | quote }}
 OIDC_LOGIN_STATE_TTL: {{ .Values.oidc.loginStateTTL | quote }}
 RATE_LIMIT_RPS: {{ .Values.config.rateLimitRps | quote }}
 RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | int64 | quote }}

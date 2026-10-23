@@ -92,8 +92,8 @@
   {{range .Alerts}}
   <tr>
     <td><a href="/alerts/{{.ID}}">{{.ID}}</a></td>
-    <td>{{index $.MonitorNames .MonitorID}}</td>
-    <td>#{{.RuleID}}</td>
+    <td>{{if .Federated}}<span class="muted">from {{.FederationOrigin}}</span>{{else}}{{index $.MonitorNames .MonitorID}}{{end}}</td>
+    <td>{{if .Federated}}<span class="muted">#{{.SourceRuleID}} (remote)</span>{{else}}#{{.RuleID}}{{end}}</td>
     <td>{{template "copyID" .EventID}}</td>
     <td>{{formatTime .CreatedAt $.Timezone}}{{with relTime .CreatedAt}} <span class="muted">({{.}})</span>{{end}}</td>
   </tr>

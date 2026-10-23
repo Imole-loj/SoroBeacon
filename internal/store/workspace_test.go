@@ -210,6 +210,27 @@ func testWorkspaceIsolation(t *testing.T, newStore conformanceFactory) {
 	require.NoError(t, err)
 	assert.Len(t, attemptsAcme, 1)
 
+	// A dead letter reaches its tenant through the alert it belongs to. The
+	// dispatcher writes it from a system context, but a tenant must neither
+	// read it nor delete it by id, and the queue listing must not show it.
+	dead := &DeadLetter{AlertID: acmeAlert.ID, ChannelID: acmeChannel.ID, LastError: "status 401", AttemptCount: 3, LastStatus: 401}
+	require.NoError(t, st.CreateDeadLetter(system, dead))
+	_, err = st.GetDeadLetter(beta, dead.ID)
+	assert.ErrorIs(t, err, ErrNotFound, "another tenant's dead letter must look like an unknown id")
+	deadBeta, err := st.ListDeadLetters(beta, DeadLetterFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, deadBeta, "a dead-letter listing must not cross tenants")
+	deadAcme, err := st.ListDeadLetters(acme, DeadLetterFilter{})
+	require.NoError(t, err)
+	require.Len(t, deadAcme, 1)
+	assert.Equal(t, dead.ID, deadAcme[0].ID)
+	deadSystem, err := st.ListDeadLetters(system, DeadLetterFilter{})
+	require.NoError(t, err)
+	require.Len(t, deadSystem, 1, "the dispatcher's system context still sees every tenant")
+	assert.ErrorIs(t, st.DeleteDeadLetter(beta, dead.ID), ErrNotFound)
+	_, err = st.GetDeadLetter(acme, dead.ID)
+	require.NoError(t, err, "the refused delete must leave the owner's row alone")
+
 	// --- aggregates ---
 
 	statsAcme, err := st.GetStats(acme)
@@ -344,36 +365,36 @@ func TestDeleteTableAllowlist(t *testing.T) {
 // context, with why. It is the readable counterpart to the source scan below
 // and to the conditional predicates in each of these methods.
 var unscopedStoreMethods = map[string]string{
-	"ListMonitors":            "the poller schedules every tenant's monitors",
-	"ListMonitorsPage":        "serves a system context so the poller's view matches the dashboard's",
-	"ListAlerts":              "the frequency rule reads one rule's history; rule_id implies the tenant",
-	"ListRules":               "the poller loads rules for a monitor it already resolved",
-	"ListChannelsForMonitor":  "the dispatcher delivers for a monitor it already resolved",
-	"RecordDeliveryAttempt":   "the dispatcher writes for an alert it already resolved",
-	"CreateDeadLetter":        "the dispatcher records a permanently failed delivery for an alert it already resolved; the row takes its tenant from that alert",
-	"CreateAlert":             "derives the workspace from the monitor it inserts into",
-	"ExpiredAlerts":           "retention sweeps every workspace",
-	"GetIngestState":          "the ledger cursor is per instance, not per tenant",
-	"SetIngestState":          "the ledger cursor is per instance, not per tenant",
-	"RecordLedgerHashes":      "the reorg window is per network, not per tenant",
-	"LedgerHashes":            "the reorg window is per network, not per tenant",
-	"PruneLedgerHashes":       "the reorg window is per network, not per tenant",
-	"RetractAlertsFromLedger": "a reorg orphans every tenant's alerts on that ledger",
-	"DeleteExpiredAlerts":     "retention sweeps every workspace, and ExpiredAlerts selects the rows it deletes",
-	"EnsureWorkspace":         "takes the workspace as an argument",
-	"AssignLegacyNetwork":     "the one-time startup upgrade labels rows the migration left unlabelled in every workspace; its predicate is the empty network, not a tenant",
-	"TokenByHash":             "authenticating: the token's own row is where its workspace comes from, so the read cannot be scoped to a tenant the caller does not have yet",
-	"ScheduleEscalation":      "the dispatcher schedules the remaining steps for an alert it already resolved; the row inherits its tenant through that alert",
-	"DueEscalations":          "the escalation scheduler sweeps every tenant's due steps, like the poller's other background passes",
-	"InitializeContractCursor": "the per-contract ledger cursor is instance-wide, and initialization must see references across workspaces",
-	"AdvanceContractCursor":    "the poller advances shared per-contract state after resolving all workspace monitors",
+	"ListMonitors":                       "the poller schedules every tenant's monitors",
+	"ListMonitorsPage":                   "serves a system context so the poller's view matches the dashboard's",
+	"ListAlerts":                         "the frequency rule reads one rule's history; rule_id implies the tenant",
+	"ListRules":                          "the poller loads rules for a monitor it already resolved",
+	"ListChannelsForMonitor":             "the dispatcher delivers for a monitor it already resolved",
+	"RecordDeliveryAttempt":              "the dispatcher writes for an alert it already resolved",
+	"CreateDeadLetter":                   "the dispatcher records a permanently failed delivery for an alert it already resolved; the row takes its tenant from that alert",
+	"CreateAlert":                        "derives the workspace from the monitor it inserts into",
+	"ExpiredAlerts":                      "retention sweeps every workspace",
+	"GetIngestState":                     "the ledger cursor is per instance, not per tenant",
+	"SetIngestState":                     "the ledger cursor is per instance, not per tenant",
+	"RecordLedgerHashes":                 "the reorg window is per network, not per tenant",
+	"LedgerHashes":                       "the reorg window is per network, not per tenant",
+	"PruneLedgerHashes":                  "the reorg window is per network, not per tenant",
+	"RetractAlertsFromLedger":            "a reorg orphans every tenant's alerts on that ledger",
+	"DeleteExpiredAlerts":                "retention sweeps every workspace, and ExpiredAlerts selects the rows it deletes",
+	"EnsureWorkspace":                    "takes the workspace as an argument",
+	"AssignLegacyNetwork":                "the one-time startup upgrade labels rows the migration left unlabelled in every workspace; its predicate is the empty network, not a tenant",
+	"TokenByHash":                        "authenticating: the token's own row is where its workspace comes from, so the read cannot be scoped to a tenant the caller does not have yet",
+	"ScheduleEscalation":                 "the dispatcher schedules the remaining steps for an alert it already resolved; the row inherits its tenant through that alert",
+	"DueEscalations":                     "the escalation scheduler sweeps every tenant's due steps, like the poller's other background passes",
+	"InitializeContractCursor":           "the per-contract ledger cursor is instance-wide, and initialization must see references across workspaces",
+	"AdvanceContractCursor":              "the poller advances shared per-contract state after resolving all workspace monitors",
 	"cleanupUnusedContractCursors":       "cursor cleanup checks every workspace before deleting shared network/contract state",
 	"cleanupUnusedSQLiteContractCursors": "cursor cleanup checks every workspace before deleting shared network/contract state",
-	"ListChannelsByIDs":       "the dispatcher resolves an escalation step's channels for a policy it already loaded through the monitor",
-	"RecordChannelHealth":     "the dispatcher folds a delivery outcome into a channel it already resolved, in the poller's cross-tenant context",
-	"MarkAlertInhibited":      "the dispatcher marks an alert it already resolved, in the poller's cross-tenant context",
-	"SetAlertSuppressed":      "the dispatcher marks an alert it already resolved, in the poller's cross-tenant context",
-	"RuleFiredWithin":         "the inhibition check asks about one rule the dispatcher already resolved; rule_id implies the tenant",
+	"ListChannelsByIDs":                  "the dispatcher resolves an escalation step's channels for a policy it already loaded through the monitor",
+	"RecordChannelHealth":                "the dispatcher folds a delivery outcome into a channel it already resolved, in the poller's cross-tenant context",
+	"MarkAlertInhibited":                 "the dispatcher marks an alert it already resolved, in the poller's cross-tenant context",
+	"SetAlertSuppressed":                 "the dispatcher marks an alert it already resolved, in the poller's cross-tenant context",
+	"RuleFiredWithin":                    "the inhibition check asks about one rule the dispatcher already resolved; rule_id implies the tenant",
 }
 
 // sqlSourceFiles lists every non-test Go source in the package directory.

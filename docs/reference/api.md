@@ -42,6 +42,39 @@ An unauthenticated instance mutates monitors and channels for anyone who can
 reach the port. Set `API_TOKEN` on anything beyond a trusted network.
 {% endhint %}
 
+## Rate limiting
+
+API rate limiting uses a per-client token bucket, enabled by setting
+`RATE_LIMIT_RPS` (see the [configuration guide](../configuration.md)); with rate
+limiting off, no `429` is ever produced. When a client exceeds the configured
+budget, the API replies with `429 Too Many Requests` and the rejected response
+carries:
+
+* `Retry-After` — the wait in whole seconds until the bucket holds a token
+  again. It is derived from the bucket's actual refill time, not a fixed
+  constant, rounded up to the next whole second and never `0`, so a client
+  that honours it never retries into a second rejection. Retry-After in
+  seconds is the interoperable form; the alternative delay format is not used.
+* `RateLimit-Limit` — the bucket size (burst). `RateLimit-Remaining` — `0` on
+  a rejection. `RateLimit-Reset` — the same value as `Retry-After`.
+
+`RateLimit-*` are informational, conventional headers rather than
+standards-track ones: they are not required for interoperability, but clients
+that already read the same pattern from other HTTP APIs can use them. They are
+sent because the limiter computes the values anyway, and they make throttling
+observable without retries.
+
+Successful responses are intentionally left unchanged — adding the headers
+there is a separate feature with cache-interaction costs of its own. The header
+is set only on the rejected response itself.
+
+One other endpoint answers `429`: retrying an alert delivery while the channel
+is still in its retry cooldown (`POST /alerts/{id}/retry`). That gate is not
+the token bucket and does not send `Retry-After`; clients should treat
+`Retry-After` as present only on token-bucket rejections.
+
+Probes (`/health`, `/livez`, `/readyz`) are exempt from rate limiting.
+
 ## Monitors
 
 | Method & path | Description |
@@ -72,6 +105,55 @@ curl -s -X PATCH localhost:8080/api/v1/monitors/1 -d '{"enabled": false}'
 | `DELETE /monitors/{id}/rules/{ruleID}` | Delete. |
 
 Params for the built-in types: [`event_emitted`](../rules/event-emitted.md), [`value_threshold`](../rules/value-threshold.md), [`token_event`](../rules/token-event.md), [`self_transfer`](../rules/self-transfer.md), [`time_window`](../rules/time-window.md), [`absence_of_event`](../rules/absence-of-event.md). Invalid params are rejected with `400` at create/update time.
+
+`GET /rule-types` returns the parameter schema the dashboard's rule builder renders. Each field has a `type` (`string`, `number`, `boolean`, `object`, or `select`), `required`, `description`, and, where applicable, `default` and `options`. A `boolean` field is a JSON boolean in `params`; the builder renders it as a true/false select and starts it at `default` when one is declared. `select` is reserved for genuine enumerations such as `comparison`, `direction`, `match`, and `op`.
+
+## Monitor templates
+
+A template is a reusable monitor shape: a name, a list of rules whose params may
+hold `{{parameter}}` placeholders, the channels to attach, and the parameters
+the placeholders take.
+
+| Method & path | Description |
+| --- | --- |
+| `POST /templates` | Create. Body: `name`, optional `description`, `rules`, `channel_ids`, `parameters`. |
+| `GET /templates` / `GET /templates/{id}` | List / get. |
+| `PATCH /templates/{id}` | Partial update; the rules are re-validated. |
+| `DELETE /templates/{id}` | Delete. Monitors already created from it are unaffected. |
+| `POST /templates/{id}/instantiate` | Create one monitor from the template. |
+| `POST /templates/{id}/instantiate/bulk` | Create up to 100 monitors from the template. |
+
+A template is checked when it is written: every rule's type must be one the
+instance knows, and the parts of a rule's params that do not depend on
+substitution are validated. A `400` names the rule by index
+(`rules[0].type`, `rules[0].params.comparison`).
+
+Instantiation is checked before anything is written, and the monitor, its
+rules and its channel links are then created in **one transaction**: a monitor
+that exists has every rule it was supposed to have. A problem with the
+template, the parameters or the channel ids is a `422`, and the `details`
+array names each one:
+
+* `rules[1].params.threshold` — a rule whose params do not validate once the
+  parameters are substituted;
+* `parameters.amount` — a required parameter with no value, a parameter the
+  request names that the template does not declare, or a placeholder the
+  template uses that it does not declare;
+* `channel_ids[0]` — a channel that does not exist in the caller's workspace.
+
+The bulk endpoint validates every instance before it writes any of them, so a
+request with one bad instance creates nothing. Each instance is then written
+in its own transaction, so an instance is never half written; the request as a
+whole is not one transaction, and a failure part-way through leaves the
+instances already created in place and names the instance that failed.
+
+```sh
+curl -s -X POST localhost:8080/api/v1/templates/1/instantiate -d '{
+  "name": "My token",
+  "contract_ids": ["CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUWDA"],
+  "parameters": {"threshold": "1000"}
+}'
+```
 
 ## Channels
 
@@ -190,3 +272,24 @@ Three behaviours worth knowing before you script against this:
 | `GET /stats` | Counts (monitors, rules, channels, alerts, alerts last 24h), last ingested ledger, last poll time. |
 | `GET /stats/alerts-daily` | Daily alert counts for the last 30 UTC calendar days. Quiet days are explicit zeroes. `{"timezone":"UTC","days":[{"day":"2026-09-01","count":0}, ...]}`. |
 | `GET /audit` | Append-only log of monitor, rule and channel changes, newest first. Query: `target_type` (`monitor`\|`rule`\|`channel`), `target_id`, `from`/`to` (RFC 3339), `limit` (≤500, default 50). Each entry has `actor` (the request ID), `action` (`create`\|`update`\|`delete`), `target_type`, `target_id`, `diff` and `created_at`. `diff` records the *names* of the fields that were sent, never their values — a channel's config holds webhook URLs and tokens and is never stored. There is no endpoint to update or delete entries. |
+
+## Federation
+
+| Method & path | Description |
+| --- | --- |
+| `POST /ingest` | Receives an alert forwarded by another SoroBeacon instance and stores it without re-evaluating rules: the sending instance already decided, and re-evaluating would duplicate alerts. Needs the `alerts:write` scope, or a static token or session. |
+
+The monitor and rule ids in the payload belong to the **sending** instance.
+They are kept as the stored alert's `source_monitor_id` and `source_rule_id`,
+and the alert itself is attached to no local monitor and no local rule — its
+own `monitor_id` and `rule_id` are zero, and `federated` is true. It lands in
+the workspace of the credential that delivered it, never in one the payload
+names. A payload that names ids this instance happens to have does not
+attach itself to them.
+
+* `201` — the alert was stored (`outcome` is `created` or `duplicate`).
+* `400` — the payload is malformed: no `event_id`, no `origin`, a severity
+  outside the vocabulary, or a hop count at the limit.
+* `422` — the payload cannot be stored here: it violates a database
+  constraint. It is a client error, and the sender must not retry it.
+* `500` — the receiver's own fault. The sender may retry.

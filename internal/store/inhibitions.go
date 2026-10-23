@@ -39,6 +39,9 @@ type Inhibitions interface {
 	// RuleFiredWithin reports whether the rule produced an alert during the
 	// trailing window.
 	RuleFiredWithin(ctx context.Context, ruleID int64, window time.Duration) (bool, error)
+	// ListRuleAlertTimes returns alert creation times at or after since in
+	// ascending order, for deriving delivery-time episodes from alert history.
+	ListRuleAlertTimes(ctx context.Context, ruleID int64, since time.Time) ([]time.Time, error)
 	// MarkAlertInhibited records which source rule suppressed an alert's
 	// delivery. Missing rows are not an error: the alert may have been
 	// pruned between dispatch and this write.

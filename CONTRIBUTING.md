@@ -1,4 +1,4 @@
-# Contributing to SoroBeacon
+#Contributing to SoroBeacon
 
 Thanks for helping build monitoring infrastructure for the Soroban
 ecosystem! SoroBeacon's MVP is intentionally small; most features are meant

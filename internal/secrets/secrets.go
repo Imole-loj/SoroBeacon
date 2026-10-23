@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -269,21 +270,31 @@ func (r *Resolver) resolveValue(ctx context.Context, v any) (any, error) {
 	case string:
 		return r.ResolveString(ctx, t)
 	case map[string]any:
+		var errs []error
 		for k, val := range t {
 			nv, err := r.resolveValue(ctx, val)
 			if err != nil {
-				return nil, err
+				errs = append(errs, err)
+				continue
 			}
 			t[k] = nv
 		}
+		if len(errs) > 0 {
+			return nil, errors.Join(errs...)
+		}
 		return t, nil
 	case []any:
+		var errs []error
 		for i, val := range t {
 			nv, err := r.resolveValue(ctx, val)
 			if err != nil {
-				return nil, err
+				errs = append(errs, err)
+				continue
 			}
 			t[i] = nv
+		}
+		if len(errs) > 0 {
+			return nil, errors.Join(errs...)
 		}
 		return t, nil
 	default:

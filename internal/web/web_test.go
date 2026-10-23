@@ -52,6 +52,13 @@ func (emptyStore) ListMonitorsPage(context.Context, store.ListFilter) ([]store.M
 func (emptyStore) ListChannelsPage(context.Context, store.ListFilter) ([]store.Channel, error) {
 	return nil, nil
 }
+
+// The default is the "no attempts in the window" result, so every page test
+// that does not care about delivery health renders the neutral column without
+// a nil-interface panic; tests that do care override it.
+func (emptyStore) GetChannelDeliveryStats(context.Context, int64, time.Time) (store.ChannelDeliveryStats, error) {
+	return store.ChannelDeliveryStats{}, nil
+}
 func (emptyStore) ListSavedSearches(context.Context) ([]store.SavedSearch, error) { return nil, nil }
 func (emptyStore) CreateSavedSearch(context.Context, *store.SavedSearch) error    { return nil }
 func (emptyStore) GetSavedSearch(context.Context, int64) (*store.SavedSearch, error) {

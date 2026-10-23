@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sorotrail/sorobeacon/internal/alerts"
 	"github.com/sorotrail/sorobeacon/internal/store"
 )
 
@@ -58,6 +59,8 @@ type fakeDispatchStore struct {
 	channels []store.Channel
 	attempts []store.DeliveryAttempt
 	health   []channelHealthCall
+	// deadLetters records the dead letters the dispatcher wrote.
+	deadLetters []store.DeadLetter
 	// window, when set, is returned by ActiveMaintenanceWindow.
 	window *store.MaintenanceWindow
 	// suppressed records the alert ID and reason of each suppression.
@@ -65,6 +68,7 @@ type fakeDispatchStore struct {
 	// inhibitions feeds the inhibition check; firing answers RuleFiredWithin.
 	inhibitions []store.Inhibition
 	firing      map[int64]bool
+	alertTimes  map[int64][]time.Time
 	inhibited   []inhibitedMark
 }
 
@@ -82,7 +86,8 @@ func (f *fakeDispatchStore) RecordDeliveryAttempt(_ context.Context, d *store.De
 	return nil
 }
 
-func (f *fakeDispatchStore) CreateDeadLetter(_ context.Context, _ *store.DeadLetter) error {
+func (f *fakeDispatchStore) CreateDeadLetter(_ context.Context, d *store.DeadLetter) error {
+	f.deadLetters = append(f.deadLetters, *d)
 	return nil
 }
 
@@ -135,6 +140,10 @@ func (f *fakeDispatchStore) ListInhibitionsForTarget(_ context.Context, target i
 
 func (f *fakeDispatchStore) RuleFiredWithin(_ context.Context, ruleID int64, _ time.Duration) (bool, error) {
 	return f.firing[ruleID], nil
+}
+
+func (f *fakeDispatchStore) ListRuleAlertTimes(_ context.Context, ruleID int64, _ time.Time) ([]time.Time, error) {
+	return f.alertTimes[ruleID], nil
 }
 
 func (f *fakeDispatchStore) MarkAlertInhibited(_ context.Context, alertID, sourceID int64) error {
@@ -222,6 +231,57 @@ func TestDispatchSuccessFirstTry(t *testing.T) {
 	assert.Equal(t, "success", st.attempts[0].Status)
 	assert.Equal(t, int64(10), st.attempts[0].AlertID)
 	assert.Equal(t, int64(1), st.attempts[0].ChannelID)
+}
+
+func TestDispatchDampsFlappingRule(t *testing.T) {
+	base := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	st := &fakeDispatchStore{
+		channels:   []store.Channel{mockChannel(1)},
+		alertTimes: map[int64][]time.Time{},
+	}
+	n := &mockNotifier{}
+	d := newTestDispatcher(t, st, n).WithFlapping(alerts.FlappingConfig{
+		Episodes: 3, Window: 15 * time.Minute, QuietAfter: 2 * time.Minute,
+	}).WithClock(func() time.Time { return base.Add(11 * time.Minute) })
+
+	alertTimes := []time.Time{
+		base,
+		base.Add(5 * time.Minute),
+		base.Add(10 * time.Minute),
+		base.Add(10*time.Minute + 30*time.Second),
+		base.Add(11 * time.Minute),
+	}
+	for i, at := range alertTimes {
+		st.alertTimes[9] = append(st.alertTimes[9], at)
+		d.Dispatch(context.Background(), Alert{
+			ID: int64(i + 1), MonitorID: 2, RuleID: 9, CreatedAt: at,
+		})
+	}
+
+	require.Equal(t, 4, n.calls, "episode starts and one summary are delivered")
+	assert.Contains(t, n.lastSent.Digest, "4 alerts in the last 15 minutes across 3 episodes")
+	require.Len(t, st.suppressed, 1)
+	assert.Contains(t, st.suppressed[0], "flapping")
+	require.Len(t, st.attempts, 4)
+	assert.Len(t, st.alertTimes[9], 5, "all alert history remains available to detection")
+}
+
+func TestDispatchNonFlappingRuleUnchanged(t *testing.T) {
+	base := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	st := &fakeDispatchStore{
+		channels:   []store.Channel{mockChannel(1)},
+		alertTimes: map[int64][]time.Time{9: {base}},
+	}
+	n := &mockNotifier{}
+	d := newTestDispatcher(t, st, n)
+	alert := Alert{ID: 20, MonitorID: 2, RuleID: 9, CreatedAt: base.Add(time.Minute)}
+
+	d.Dispatch(context.Background(), alert)
+
+	require.Equal(t, 1, n.calls)
+	assert.Equal(t, alert, n.lastSent)
+	require.Len(t, st.attempts, 1)
+	assert.Empty(t, st.suppressed)
 }
 
 func TestDispatchRetriesThenSucceeds(t *testing.T) {
@@ -598,4 +658,75 @@ func TestRetryAppliesPerChannelTimeout(t *testing.T) {
 	assert.Equal(t, "success", da.Status)
 	require.True(t, n.hasDeadline, "Retry must apply channel timeout to ctx")
 	assert.WithinDuration(t, before.Add(8*time.Second), n.gotDeadline, 500*time.Millisecond)
+}
+
+func TestDispatchDisableAfterFailuresBasic(t *testing.T) {
+	// Default (0) never auto-disables
+	st := &fakeDispatchStore{channels: []store.Channel{mockChannel(1)}}
+	n := &mockNotifier{failures: 99, err: &HTTPStatusError{StatusCode: 404, Body: "gone"}}
+	d := newTestDispatcher(t, st, n)
+
+	d.Dispatch(context.Background(), Alert{ID: 34, MonitorID: 2})
+
+	updates := healthFor(st, 1)
+	require.Len(t, updates, 1)
+	assert.Zero(t, updates[0].DisableAfter, "default (0) never auto-disables")
+}
+
+// Threshold 4 with 404 permanent failures - after 4 failures, channel auto-disables
+func TestDispatchDisableAfterFailuresThreshold(t *testing.T) {
+	st := &fakeDispatchStore{channels: []store.Channel{mockChannel(1)}}
+	n := &mockNotifier{failures: 99, err: &HTTPStatusError{StatusCode: 404, Body: "gone"}}
+	d := newTestDispatcher(t, st, n)
+	d.WithDisableAfterFailures(4)
+
+	// Each dispatch records health with DisableAfter=4 (the threshold),
+	// but the auto-disable behavior depends on whether the channel has
+	// already accumulated enough permanent failures in the store.
+	// First dispatch: health recorded with DisableAfter=4
+	d.Dispatch(context.Background(), Alert{ID: 34, MonitorID: 2})
+	updates := healthFor(st, 1)
+	require.Len(t, updates, 1)
+	// The threshold value is always 4 when configured; what matters is
+	// whether the store's auto-disable logic triggers after N permanent failures.
+	assert.Equal(t, 4, updates[0].DisableAfter, "DisableAfter is set to the configured threshold")
+
+	// A 404 is not retried — the receiver rejected the request itself, and
+	// sending it again unchanged fails the same way — so a delivery is one
+	// attempt and the circuit breaker counts one failure per delivery. The
+	// second and third dispatches still reach the channel.
+	d.Dispatch(context.Background(), Alert{ID: 35, MonitorID: 2})
+	updates = healthFor(st, 1)
+	require.Len(t, updates, 2)
+	assert.Equal(t, 4, updates[1].DisableAfter, "DisableAfter remains at threshold value")
+
+	// Third dispatch
+	d.Dispatch(context.Background(), Alert{ID: 36, MonitorID: 2})
+	updates = healthFor(st, 1)
+	require.Len(t, updates, 3)
+	assert.Equal(t, 4, updates[2].DisableAfter, "DisableAfter remains at threshold value")
+
+	// Fourth dispatch: the breaker is open by now, so the channel is skipped
+	// and the health is left alone.
+	d.Dispatch(context.Background(), Alert{ID: 37, MonitorID: 2})
+	updates = healthFor(st, 1)
+	require.Len(t, updates, 3)
+	assert.Equal(t, 4, updates[2].DisableAfter, "DisableAfter remains at threshold value")
+
+	// Fifth dispatch
+	d.Dispatch(context.Background(), Alert{ID: 38, MonitorID: 2})
+	updates = healthFor(st, 1)
+	require.Len(t, updates, 3)
+	assert.Equal(t, 4, updates[0].DisableAfter, "DisableAfter remains at threshold value")
+}
+
+// WithMetrics(nil) should be nil-safe
+func TestDispatchWithMetricsNilSafe(t *testing.T) {
+	st := &fakeDispatchStore{channels: []store.Channel{mockChannel(1)}}
+	n := &mockNotifier{}
+	d := newTestDispatcher(t, st, n)
+	d.WithMetrics(nil) // should not panic
+
+	d.Dispatch(context.Background(), Alert{ID: 39, MonitorID: 2})
+	assert.Equal(t, 1, n.calls, "dispatch with nil metrics should still work")
 }

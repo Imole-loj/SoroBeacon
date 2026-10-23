@@ -2,8 +2,8 @@
 <p class="muted"><a href="/alerts">← Alerts</a></p>
 <h1>Alert #{{.Alert.ID}}</h1>
 <table class="decoded">
-  <tr><th>Monitor</th><td>{{if .Monitor}}<a href="/monitors/{{.Monitor.ID}}">{{.Monitor.Name}}</a>{{else}}#{{.Alert.MonitorID}}{{end}}</td></tr>
-  <tr><th>Rule</th><td>{{if .Rule}}{{.Rule.Type}} (#{{.Rule.ID}}){{else}}#{{.Alert.RuleID}}{{end}}</td></tr>
+  <tr><th>Monitor</th><td>{{if .Alert.Federated}}<span class="muted">from {{.Alert.FederationOrigin}}</span>{{else if .Monitor}}<a href="/monitors/{{.Monitor.ID}}">{{.Monitor.Name}}</a>{{else}}#{{.Alert.MonitorID}}{{end}}</td></tr>
+  <tr><th>Rule</th><td>{{if .Alert.Federated}}<span class="muted">#{{.Alert.SourceRuleID}} on the sending instance</span>{{else if .Rule}}{{.Rule.Type}} (#{{.Rule.ID}}){{else}}#{{.Alert.RuleID}}{{end}}</td></tr>
   <tr><th>Severity</th><td>{{if .Alert.Severity}}<span class="pill {{severityClass .Alert.Severity}}">{{.Alert.Severity}}</span>{{else}}<span class="pill warning">warning</span>{{end}}</td></tr>
   <tr><th>Contract</th><td><code>{{.ContractID}}</code></td></tr>
   <tr><th>Event</th><td>{{.EventName}} <code>{{.Alert.EventID}}</code></td></tr>

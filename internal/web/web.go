@@ -80,9 +80,8 @@ type Server struct {
 	// auth gates every page on a dashboard session once a token is
 	// configured. Nil (until WithAuth, or with no API_TOKEN) leaves the
 	// dashboard open.
-	a     *auth.Authenticator
-	auth  *auth.Authenticator
-	roles *auth.RoleEnforcer
+	a    *auth.Authenticator
+	auth *auth.Authenticator
 	// tokenMgr mints and lists scoped API tokens for the dashboard's token
 	// page. Nil disables the page rather than showing one that cannot mint.
 	tokenMgr *auth.Manager
@@ -332,84 +331,91 @@ func (s *Server) monitorRows(monitors []store.Monitor, tz string, now time.Time)
 	return out
 }
 
-// WithRoles attaches role enforcement to the dashboard router.
-func (s *Server) WithRoles(re *auth.RoleEnforcer) *Server {
-	s.roles = re
-	return s
-}
-
 // Routes returns the dashboard router, mounted at / by cmd/sorobeacon.
 func (s *Server) Routes() chi.Router {
-	r := chi.NewRouter()
+	mux := chi.NewRouter()
 	// Registered before any route, so the gate covers everything below it.
 	// With no token configured it is the identity function.
-	r.Use(s.authMiddleware())
-	r.Use(auth.RoleMiddleware(s.roles, auth.RoleViewer))
-	r.Get(loginPath, s.loginPage)
-	r.Post(loginPath, s.login)
-	r.Post(logoutPath, s.logout)
+	mux.Use(s.authMiddleware())
+	// The role check comes after the session gate, so the credential is
+	// resolved once and the role it carries is read from there.
+	mux.Use(auth.RoleCheck{
+		Authenticator: s.auth,
+		Table:         routeRoles,
+		RoutePath:     routePath,
+		RouteExists: func(method, path string) bool {
+			// The router is the authority on which routes exist, so a
+			// request for a page that does not exist is left to the 404 page
+			// instead of being answered 403.
+			return mux.Match(chi.NewRouteContext(), method, path)
+		},
+		Deny: s.denyRole,
+	}.Middleware())
+	mux.Get(loginPath, s.loginPage)
+	mux.Post(loginPath, s.login)
+	mux.Post(logoutPath, s.logout)
 	// OIDC sign-in, when a provider is configured. Both are exempt from the
 	// session gate (see authExempt); without one they are 404s.
-	r.Get(oidcStartPath, s.oidcStart)
-	r.Get(oidcCallbackPath, s.oidcCallback)
+	mux.Get(oidcStartPath, s.oidcStart)
+	mux.Get(oidcCallbackPath, s.oidcCallback)
 
-	r.Get("/", s.index)
-	r.Get("/favicon.ico", s.favicon)
-	r.Post("/theme", s.setTheme)
-	r.Post("/timezone", s.setTimezone)
+	mux.Get("/", s.index)
+	mux.Get("/favicon.ico", s.favicon)
+	mux.Post("/theme", s.setTheme)
+	mux.Post("/timezone", s.setTimezone)
 
-	r.Get("/monitors", s.monitors)
-	r.Post("/monitors", s.createMonitor)
-	r.Post("/monitors/bulk", s.bulkMonitors)
-	r.Get("/monitors/trash", s.listTrash)
-	r.Get("/monitors/{id}", s.monitorDetail)
-	r.Post("/monitors/{id}/toggle", s.toggleMonitor)
-	r.Post("/monitors/{id}/delete", s.deleteMonitor)
-	r.Post("/monitors/{id}/soft-delete", s.deleteMonitor) // alias for soft-delete
-	r.Post("/monitors/{id}/restore", s.restoreMonitor)
-	r.Post("/monitors/{id}/duplicate", s.duplicateMonitor)
-	r.Post("/monitors/{id}/rules", s.createRuleFromBuilder)
-	r.Post("/monitors/{id}/rules/{ruleID}/toggle", s.toggleRule)
-	r.Post("/monitors/{id}/rules/{ruleID}/delete", s.deleteRule)
-	r.Post("/monitors/{id}/channels", s.setMonitorChannels)
+	mux.Get("/monitors", s.monitors)
+	mux.Post("/monitors", s.createMonitor)
+	mux.Post("/monitors/bulk", s.bulkMonitors)
+	mux.Get("/monitors/trash", s.listTrash)
+	mux.Get("/monitors/{id}", s.monitorDetail)
+	mux.Post("/monitors/{id}/toggle", s.toggleMonitor)
+	mux.Post("/monitors/{id}/delete", s.deleteMonitor)
+	mux.Post("/monitors/{id}/soft-delete", s.deleteMonitor) // alias for soft-delete
+	mux.Post("/monitors/{id}/restore", s.restoreMonitor)
+	mux.Post("/monitors/{id}/duplicate", s.duplicateMonitor)
+	mux.Post("/monitors/{id}/rules", s.createRuleFromBuilder)
+	mux.Post("/monitors/{id}/rules/{ruleID}/toggle", s.toggleRule)
+	mux.Post("/monitors/{id}/rules/{ruleID}/delete", s.deleteRule)
+	mux.Post("/monitors/{id}/channels", s.setMonitorChannels)
 
-	r.Get("/channels", s.channels)
-	r.Post("/channels", s.createChannel)
-	r.Get("/channels/{id}/edit", s.editChannelPage)
-	r.Post("/channels/{id}", s.updateChannel)
-	r.Post("/channels/{id}/delete", s.deleteChannel)
-	r.Post("/channels/{id}/test", s.testChannel)
-	r.Post("/channels/{id}/toggle", s.toggleChannel)
-	r.Post("/channels/bulk", s.bulkChannels)
-	r.Post("/channels/{id}/duplicate", s.duplicateChannel)
+	mux.Get("/channels", s.channels)
+	mux.Post("/channels", s.createChannel)
+	mux.Get("/channels/{id}/edit", s.editChannelPage)
+	mux.Post("/channels/{id}", s.updateChannel)
+	mux.Post("/channels/{id}/delete", s.deleteChannel)
+	mux.Post("/channels/{id}/test", s.testChannel)
+	mux.Post("/channels/{id}/toggle", s.toggleChannel)
+	mux.Post("/channels/bulk", s.bulkChannels)
+	mux.Post("/channels/{id}/duplicate", s.duplicateChannel)
 
-	r.Get("/rulebuilder/{type}", s.ruleBuilderFields)
+	mux.Get("/rulebuilder/{type}", s.ruleBuilderFields)
 
-	r.Get("/tokens", s.tokens)
-	r.Post("/tokens", s.createToken)
-	r.Post("/tokens/{id}/revoke", s.revokeToken)
+	mux.Get("/tokens", s.tokens)
+	mux.Post("/tokens", s.createToken)
+	mux.Post("/tokens/{id}/revoke", s.revokeToken)
 
-	r.Get("/searches", s.searches)
-	r.Post("/searches", s.createSearch)
-	r.Post("/searches/{id}/delete", s.deleteSearch)
-	r.Post("/searches/{id}/default", s.setDefaultSearch)
-	r.Post("/searches/{id}/undefault", s.clearDefaultSearch)
+	mux.Get("/searches", s.searches)
+	mux.Post("/searches", s.createSearch)
+	mux.Post("/searches/{id}/delete", s.deleteSearch)
+	mux.Post("/searches/{id}/default", s.setDefaultSearch)
+	mux.Post("/searches/{id}/undefault", s.clearDefaultSearch)
 
-	r.Post("/monitors/import", s.importContractsWeb)
+	mux.Post("/monitors/import", s.importContractsWeb)
 
-	r.Get("/alerts", s.alerts)
-	r.Get("/alerts/{id}/deliveries", s.alertDeliveries)
-	r.Post("/alerts/{id}/deliveries/{channelID}/retry", s.retryDelivery)
-	r.Get("/alerts/{id}", s.alertDetail)
+	mux.Get("/alerts", s.alerts)
+	mux.Get("/alerts/{id}/deliveries", s.alertDeliveries)
+	mux.Post("/alerts/{id}/deliveries/{channelID}/retry", s.retryDelivery)
+	mux.Get("/alerts/{id}", s.alertDetail)
 
-	r.Get("/dead-letters", s.listDeadLetters)
-	r.Post("/dead-letters/{id}/redrive", s.redriveDeadLetter)
+	mux.Get("/dead-letters", s.listDeadLetters)
+	mux.Post("/dead-letters/{id}/redrive", s.redriveDeadLetter)
 
-	r.Get("/maintenance", s.maintenance)
-	r.Post("/maintenance", s.createMaintenance)
-	r.Post("/maintenance/{id}/delete", s.deleteMaintenance)
-	r.NotFound(s.notFound)
-	return r
+	mux.Get("/maintenance", s.maintenance)
+	mux.Post("/maintenance", s.createMaintenance)
+	mux.Post("/maintenance/{id}/delete", s.deleteMaintenance)
+	mux.NotFound(s.notFound)
+	return mux
 }
 
 // navSection maps a page name to the header nav entry it highlights.
@@ -910,32 +916,44 @@ func (s *Server) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w, r)
 		return
 	}
+	data, err := s.monitorPage(r, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.notFound(w, r)
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	s.render(w, r, "monitor", data)
+}
+
+// monitorPage assembles the monitor detail page's data. The rule builder
+// re-renders this same page when it rejects a malformed form, so the two
+// share one assembly: a page that has to show the monitor's rules must not
+// be built in two places that can drift apart.
+func (s *Server) monitorPage(r *http.Request, id int64) (map[string]any, error) {
 	m, err := s.store.GetMonitor(r.Context(), id)
 	if err != nil {
-		s.notFound(w, r)
-		return
+		return nil, err
 	}
 	ruleList, err := s.store.ListRules(r.Context(), id, false)
 	if err != nil {
-		s.fail(w, err)
-		return
+		return nil, err
 	}
 	channels, err := s.store.ListChannels(r.Context(), false)
 	if err != nil {
-		s.fail(w, err)
-		return
+		return nil, err
 	}
 	recent, err := s.store.ListAlerts(r.Context(), store.AlertFilter{
 		MonitorID: id, Limit: recentAlertsPanelSize,
 	})
 	if err != nil {
-		s.fail(w, err)
-		return
+		return nil, err
 	}
 	stats, err := s.store.GetMonitorStats(r.Context(), id)
 	if err != nil {
-		s.fail(w, err)
-		return
+		return nil, err
 	}
 	attached := map[int64]bool{}
 	for _, cid := range m.ChannelIDs {
@@ -946,7 +964,7 @@ func (s *Server) monitorDetail(w http.ResponseWriter, r *http.Request) {
 	// monitorRow the list pages use. Two readings of "when did this fire" on
 	// one page would be the disagreement the issue asks not to create.
 	row := s.monitorRow(*m, tz, time.Now())
-	s.render(w, r, "monitor", map[string]any{
+	return map[string]any{
 		"Title": m.Name, "Monitor": row, "Rules": ruleList,
 		"Channels": channels, "Attached": attached, "RuleTypes": s.registry.Types(),
 		"RecentAlerts": recent,
@@ -955,7 +973,14 @@ func (s *Server) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		"AlertsHref": template.URL("/alerts?monitor_id=" + strconv.FormatInt(id, 10)),
 		"Stats":      stats,
 		"LastAlert":  formatStatTime(stats.LastAlertAt, tz),
-	})
+		// The rule builder's own state. The page is also rendered after the
+		// builder rejects a malformed form, which fills these in with what
+		// the user typed; the defaults are the empty form.
+		"BuilderType":      "",
+		"BuilderFields":    "",
+		"BuilderRawParams": defaultBuilderParams,
+		"BuilderErrors":    []string{},
+	}, nil
 }
 
 // formatStatTime renders the nullable most-recent-alert timestamp from
@@ -1213,6 +1238,17 @@ func (s *Server) setMonitorChannels(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/monitors/%d", id), http.StatusSeeOther)
 }
 
+// The window the channels page's delivery-health column aggregates over, and
+// the label it is shown under. It is deliberately the same default the stats
+// API uses (GET /channels/{id}/stats), so the dashboard and the endpoint
+// answer "how is this channel doing?" over the same span and can never
+// disagree about which window either one meant. The label is a constant
+// because Duration.String() would spell 24h as "24h0m0s".
+const (
+	deliveryHealthWindow      = 24 * time.Hour
+	deliveryHealthWindowLabel = "24h"
+)
+
 func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 	f := store.ListFilter{Limit: 50}
 	if v := r.URL.Query().Get("cursor"); v != "" {
@@ -1228,6 +1264,22 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// Delivery health for the listed channels, aggregated in the database per
+	// channel. A store failure fails the page like every other read here:
+	// a half-rendered health column that silently shows nothing would be
+	// mistaken for "no attempts". One query per listed channel is bounded by
+	// the page size, and each is answered by the (channel_id, attempted_at)
+	// index added in migration 0032.
+	since := time.Now().UTC().Add(-deliveryHealthWindow)
+	health := make(map[int64]store.ChannelDeliveryStats, len(channels))
+	for _, ch := range channels {
+		ds, err := s.store.GetChannelDeliveryStats(r.Context(), ch.ID, since)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		health[ch.ID] = ds
+	}
 	empty := ""
 	if len(channels) == 0 {
 		empty = "no_channels"
@@ -1240,6 +1292,9 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 		"Title": "Channels", "Channels": channels, "ChannelTypes": s.factory.Types(),
 		"Empty": empty, "HasMonitors": len(monitors) > 0,
 		"NextCursor": next,
+		// DeliveryStats is keyed by channel id; index in the template reads a
+		// missing entry as the zero value, which is exactly "no attempts".
+		"DeliveryStats": health, "DeliveryWindow": deliveryHealthWindowLabel,
 	})
 }
 
@@ -1926,6 +1981,10 @@ func (s *Server) retryDelivery(w http.ResponseWriter, r *http.Request) {
 		Payload:   alert.Payload,
 		CreatedAt: alert.CreatedAt,
 		Severity:  string(alert.Severity),
+		// A federated alert has no local rule, so the channels that key on
+		// the rule need the instance it came from to tell two peers' alerts
+		// apart.
+		FederationOrigin: alert.FederationOrigin,
 	}
 	if m, merr := s.store.GetMonitor(r.Context(), alert.MonitorID); merr == nil && m != nil {
 		na.MonitorName = m.Name

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -22,7 +23,7 @@ func walkedRoutes(t *testing.T) []route {
 		if path == "/*" {
 			return nil
 		}
-		out = append(out, route{Method: method, Path: normalizeRoute(path)})
+		out = append(out, route{Method: method, Path: auth.NormalizeRoute(path)})
 		return nil
 	}
 	if err := chi.Walk(s.Routes(), walk); err != nil {
@@ -65,7 +66,7 @@ func TestScopeTableCoversEveryRoute(t *testing.T) {
 		}
 	}
 
-	for key := range routeScopes {
+	for _, key := range routeScopes.Patterns() {
 		if !registered[key] {
 			t.Errorf("routeScopes names %q but no such route is registered", key)
 		}
@@ -80,7 +81,13 @@ func TestRouteScopesOnlyNameMintableScopes(t *testing.T) {
 	for _, s := range auth.AllScopes {
 		mintable[s] = true
 	}
-	for key, scopes := range routeScopes {
+	for _, key := range routeScopes.Patterns() {
+		method, path, _ := strings.Cut(key, " ")
+		scopes, ok := routeScopes.Lookup(method, path)
+		if !ok {
+			t.Errorf("%q is in the table but does not resolve", key)
+			continue
+		}
 		if len(scopes) == 0 {
 			t.Errorf("%q maps to no scopes; use auth.ScopeNone to say \"any credential, no permission\"", key)
 		}

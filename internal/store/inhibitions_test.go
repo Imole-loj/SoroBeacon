@@ -102,6 +102,14 @@ func testInhibitionStore(t *testing.T, st conformanceStore) {
 		require.NoError(t, err)
 		require.False(t, fired, "the target produced nothing")
 
+		times, err := st.ListRuleAlertTimes(ctx, sourceID, time.Now().Add(-time.Hour))
+		require.NoError(t, err)
+		require.Len(t, times, 1)
+		require.False(t, times[0].IsZero())
+		times, err = st.ListRuleAlertTimes(ctx, sourceID, time.Now().Add(time.Second))
+		require.NoError(t, err)
+		require.Empty(t, times, "alerts before since are excluded")
+
 		require.NoError(t, st.MarkAlertInhibited(ctx, alertID, sourceID))
 		got, err := st.GetAlert(ctx, alertID)
 		require.NoError(t, err)

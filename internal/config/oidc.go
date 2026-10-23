@@ -47,6 +47,10 @@ type OIDC struct {
 	// (OIDC_WORKSPACE_CLAIM), for one instance serving several tenants off one
 	// provider. Empty disables claim mapping.
 	WorkspaceClaim string
+	// RoleClaim names an ID-token claim whose value is the role the session
+	// is minted with (OIDC_ROLE_CLAIM): "viewer", "editor" or "admin". Empty
+	// means every identity that signs in is an admin.
+	RoleClaim string
 	// AllowedDomains is the e-mail domain allow-list (OIDC_ALLOWED_DOMAINS).
 	// Empty accepts every account the provider authenticates.
 	AllowedDomains []string
@@ -73,6 +77,7 @@ func parseOIDC(getenv func(string) string) (OIDC, error) {
 		RedirectURL:    strings.TrimSpace(getenv("OIDC_REDIRECT_URL")),
 		Workspace:      workspace.ID(strings.TrimSpace(getenv("OIDC_WORKSPACE"))),
 		WorkspaceClaim: strings.TrimSpace(getenv("OIDC_WORKSPACE_CLAIM")),
+		RoleClaim:      strings.TrimSpace(getenv("OIDC_ROLE_CLAIM")),
 		Scopes:         splitList(getenv("OIDC_SCOPES")),
 		AllowedDomains: lowerList(getenv("OIDC_ALLOWED_DOMAINS")),
 	}
@@ -90,7 +95,7 @@ func parseOIDC(getenv func(string) string) (OIDC, error) {
 		// variable the operator actually got wrong is the useful answer.
 		for _, key := range []string{
 			"OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL", "OIDC_SCOPES",
-			"OIDC_WORKSPACE", "OIDC_WORKSPACE_CLAIM", "OIDC_ALLOWED_DOMAINS", "OIDC_LOGIN_STATE_TTL",
+			"OIDC_WORKSPACE", "OIDC_WORKSPACE_CLAIM", "OIDC_ROLE_CLAIM", "OIDC_ALLOWED_DOMAINS", "OIDC_LOGIN_STATE_TTL",
 		} {
 			if strings.TrimSpace(getenv(key)) != "" {
 				return o, fmt.Errorf("%s is set but OIDC_ISSUER is not, so single sign-on is off: set OIDC_ISSUER to the provider's base URL or unset %s", key, key)
@@ -158,6 +163,7 @@ func (o OIDC) AuthOIDC() auth.OIDCConfig {
 		Scopes:         o.Scopes,
 		Workspace:      o.Workspace,
 		WorkspaceClaim: o.WorkspaceClaim,
+		RoleClaim:      o.RoleClaim,
 		AllowedDomains: o.AllowedDomains,
 		StateTTL:       o.StateTTL,
 	}

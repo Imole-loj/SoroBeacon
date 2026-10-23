@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -206,6 +207,62 @@ func (e *Email) tlsConfig() *tls.Config {
 		// off for a relay with a self-signed certificate.
 		InsecureSkipVerify: e.cfg.TLSSkipVerify,
 	}
+}
+
+// Check establishes an SMTP session and verifies TLS and authentication,
+// then quits before issuing MAIL, RCPT or DATA. It never sends a message.
+func (e *Email) Check(ctx context.Context) error {
+	timeout := e.sendTimeout()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	connectTimeout := e.connectTimeout(timeout)
+	addr := net.JoinHostPort(e.cfg.Host, strconv.Itoa(e.cfg.Port))
+	conn, err := (&net.Dialer{Timeout: connectTimeout}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("email: connect: %w", e.sanitizeError(err))
+	}
+	defer func() { _ = conn.Close() }()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("email: %w", e.sanitizeError(err))
+		}
+	}
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopped:
+		}
+	}()
+	client, err := smtp.NewClient(conn, e.cfg.Host)
+	if err != nil {
+		return fmt.Errorf("email: greeting: %w", e.sanitizeError(err))
+	}
+	defer func() { _ = client.Close() }()
+	if offered, _ := client.Extension("STARTTLS"); offered {
+		if err := client.StartTLS(e.tlsConfig()); err != nil {
+			return fmt.Errorf("email: starttls: %w", e.sanitizeError(err))
+		}
+	} else if e.cfg.RequireTLS {
+		return errors.New("email: the server does not offer STARTTLS but the channel requires TLS")
+	}
+	if e.cfg.Username != "" {
+		if ok, _ := client.Extension("AUTH"); !ok {
+			return errors.New("email: the server does not offer authentication but the channel is configured with a username")
+		}
+		if err := client.Auth(smtp.PlainAuth("", e.cfg.Username, e.cfg.Password, e.cfg.Host)); err != nil {
+			return fmt.Errorf("email: authentication failed: %w", e.sanitizeError(err))
+		}
+	}
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("email: quit: %w", e.sanitizeError(err))
+	}
+	return nil
 }
 
 // Send delivers one alert over SMTP.

@@ -4,13 +4,15 @@ SoroBeacon has two authorization layers, and they answer different questions:
 
 * **Authentication** — is this request carrying a credential the process
   accepts? (`internal/auth/auth.go`, `internal/api/auth.go`)
-* **Authorization** — what may that credential reach? Today that is a
-  **scope list** carried by database-backed tokens, checked against a route
-  table (`internal/auth/tokens.go`, `internal/api/scopes.go`).
+* **Authorization** — what may that credential reach? There are two answers to
+  that, and a request has to satisfy both: a **role** (`viewer`, `editor`,
+  `admin`) and, for database-backed tokens, a **scope list** checked against
+  a route table (`internal/auth/tokens.go`, `internal/api/scopes.go`).
 
-Roles (`viewer`, `editor`, `admin`) also exist in the code, but they are **not
-enforced by the shipped server**. See [Roles](#roles-defined-not-enforced)
-before relying on them.
+Roles are enforced on both surfaces: the API router and the dashboard router
+each mount the same middleware over their own route table
+(`internal/api/roles.go`, `internal/web/roles.go`). See [Roles](#roles) before
+relying on them.
 
 This page is the complete enumeration. If the code and this page disagree, the
 code wins; the file to read is named beside each claim.
@@ -45,11 +47,12 @@ When authentication is enabled (`API_TOKEN`, `WORKSPACE_TOKENS` or
   expired token, or an invalid session. The response carries
   `WWW-Authenticate: Bearer realm="sorobeacon"`. An expired scoped token is
   indistinguishable from a wrong one.
-* **`403`** — the credential is valid but not allowed. Two messages occur:
+* **`403`** — the credential is valid but not allowed. Three messages occur:
   `"token lacks scope <scope>"` (the token is scoped and lacks a required
-  grant) and `"this route accepts no scoped token"` (the route has no entry in
-  the scope table). Neither message is a secret; naming the missing scope is
-  what lets a caller ask for the right one.
+  grant), `"this route accepts no scoped token"` (the route has no entry in
+  the scope table) and `"forbidden"` (the credential's role does not reach
+  the route). None of the messages is a secret; naming the missing scope or
+  the required role is what lets a caller ask for the right one.
 * **`503`** — a valid request to a route whose backing feature is not wired
   into this process, such as token management (see
   [Known gaps](#known-gaps-worth-knowing)).
@@ -120,33 +123,95 @@ them.
 A channel **test** is a write even though nothing is stored: it sends a real
 notification. Acknowledging an alert is a write because it stops an escalation.
 
-## Roles: defined, not enforced
+## Roles
 
-`internal/auth/roles.go` defines `viewer < editor < admin`, and static tokens
-may carry a role suffix (`token:admin`, `token:editor`, `token:viewer`).
-`auth.RoleForRequest` parses it. However, **the shipped server does not
-enforce roles**:
+SoroBeacon has three roles, `viewer < editor < admin`, and they are
+**enforced** on both surfaces. The API router and the dashboard router each
+mount the same middleware (`internal/auth.RoleCheck`) over a table of what
+each route requires (`internal/api/roles.go`, `internal/web/roles.go`).
 
-* `cmd/sorobeacon/main.go` never constructs a `RoleEnforcer` and never calls
-  `WithRoles` on the API or dashboard servers. Both routers apply
-  `auth.RoleMiddleware` with a nil enforcer, which is a pass-through.
-* `api.RoleMiddleware` and `api.RequireRole` are not mounted at all.
-* The role parsed from a static token is never consulted on a request path;
-  only unscoped tests call `RoleForRequest`.
+### Where a role comes from
 
-Consequences, stated plainly:
+| Credential | Role |
+| --- | --- |
+| Static bearer token `API_TOKEN=secret` | `admin` |
+| Static bearer token `API_TOKEN=secret:viewer` | `viewer` |
+| Static bearer token `API_TOKEN=secret:editor` | `editor` |
+| Static bearer token `API_TOKEN=secret:admin` | `admin` |
+| Workspace token `WORKSPACE_TOKENS=team=secret:editor` | `editor` |
+| Dashboard session minted from a static token | the token's role |
+| Dashboard session minted from an OIDC identity | the role the provider's claim maps, else `admin` |
+| Scoped bearer token (`sb_` prefix) | the coarsest role its scopes allow: read-only is a `viewer`, a write scope is an `editor`, `tokens:write` is an `admin` |
+| No credential configured | `admin` (the instance is open) |
 
-* **A read-only role does not exist today.** Every static token and every
-  session can mutate everything in its workspace. If you need read-only CI,
-  mint a scoped token with only `*:read` scopes; do not rely on a role suffix.
-* A role suffix on an `API_TOKEN` entry changes nothing about authorization.
-  Worse, the suffix is stripped when the token table is built: an entry
-  `secret:viewer` is stored as the digest of `secret`, so clients must present
-  `secret`, not `secret:viewer`. Since the role is never checked, the suffix is
-  configuration noise with a credential-matching side effect.
-* The route-by-route role maps in `internal/api/auth.go` are dead code. New
-  endpoints must be mapped in `routeScopes`; that is the only table with an
-  effect.
+The suffix is **stripped when the token table is built**: an entry
+`secret:viewer` is stored as the digest of `secret`, so a client presents
+`secret`, not `secret:viewer`. The suffix selects the role; it is not part of
+the secret the client sends.
+
+An OIDC deployment maps roles with `OIDC_ROLE_CLAIM`, naming a claim in the
+verified ID token whose value is `viewer`, `editor` or `admin`. A claim the
+token lacks, or one naming no known role, leaves the identity an admin.
+
+### What each role may do
+
+* A **viewer** reads. It cannot change the instance.
+* An **editor** changes what the instance is for: monitors, rules, channels,
+  maintenance windows, saved searches, and the alerts that flow through them
+  (acknowledging, retrying a delivery, redriving a dead letter, ingesting a
+  federated alert).
+* An **admin** does the administrative things on top: minting and revoking
+  API tokens, and reading the audit log.
+
+The API route table (`internal/api/roles.go`) is the authority for the API;
+the dashboard's (`internal/web/roles.go`) is the authority for the dashboard.
+Both are deny-by-default: a route with no entry is refused to every
+credential, and a test walks the router and fails if a route and the table
+disagree in either direction.
+
+| API routes | Minimum role |
+| --- | --- |
+| `GET /monitors`, `/monitors/{id}`, `/monitors/{id}/stats`, `/monitors/{id}/rules`, `/monitors/{id}/escalation`, `/monitors/trash` | viewer |
+| `GET /channels`, `/channels/{id}`, `/channels/{id}/stats` | viewer |
+| `GET /templates`, `/templates/{id}` | viewer |
+| `GET /alerts`, `/alerts.csv`, `/alerts/export`, `/alerts/stream`, `/alerts/{id}/deliveries`, `/dead-letters`, `/inhibitions`, `/maintenance-windows`, `/maintenance-windows/{id}` | viewer |
+| `GET /stats`, `/stats/alerts-daily` | viewer |
+| `GET /version`, `/poller`, `/rule-types` | viewer |
+| `POST /monitors`, `/monitors/bulk`, `/monitors/import` | editor |
+| `PATCH`/`DELETE /monitors/{id}`, `POST /monitors/{id}/duplicate`, `/soft-delete`, `/restore` | editor |
+| `POST /monitors/{id}/rules`, `/rules/bulk`, `PATCH`/`DELETE /monitors/{id}/rules/{ruleID}` | editor |
+| `POST /monitors/{id}/rules/dry-run` | viewer |
+| `PUT`/`DELETE /monitors/{id}/escalation` | editor |
+| `POST /channels`, `PATCH`/`DELETE /channels/{id}`, `/channels/bulk`, `/channels/{id}/duplicate`, `/channels/{id}/test` | editor |
+| `POST /templates`, `PATCH`/`DELETE /templates/{id}`, `/templates/{id}/instantiate`, `/templates/{id}/instantiate/bulk` | editor |
+| `POST /alerts/{id}/acknowledge`, `/alerts/{id}/deliveries/{channelID}/retry`, `/ingest`, `/dead-letters/{id}/redrive`, `/inhibitions`, `DELETE /inhibitions/{sourceID}/{targetID}` | editor |
+| `POST`/`PATCH`/`DELETE /maintenance-windows...` | editor |
+| `GET`/`POST /tokens`, `POST /tokens/{id}/revoke` | admin |
+| `GET /audit` | admin |
+| `/health`, `/livez`, `/readyz` | no credential at all |
+
+The dashboard's table follows the same shape: every page that changes
+something is an editor's, the token pages are an admin's, the read-only pages
+are a viewer's, and the sign-in flow (`/login`, `/logout`, the OIDC paths,
+`/theme`, `/timezone`, `/favicon.ico`) needs no credential.
+
+### Roles and scopes together
+
+A request has to pass **both** gates. The role says how far the credential
+reaches; the scopes say which resources within that reach it may touch. A
+scoped token with `monitors:read` is a viewer, so it may read monitors, and
+the scope table is what stops it reading channels. A scoped token with
+`tokens:write` is an admin, so it may mint tokens — and the scope table
+still requires `tokens:write` for the token routes.
+
+### What this changed for an existing deployment
+
+Roles were defined but not enforced before this shipped. **A static token
+without a role suffix is still an admin**, so an existing deployment sees no
+change; a token that *did* carry a `:viewer` suffix now really is a viewer
+and can no longer write. If anyone relied on such a token to change things,
+give them `:editor` or `:admin` instead. See
+[Upgrading](../operations/upgrading.md#roles-are-enforced-now).
 
 ## Workspaces
 
@@ -172,8 +237,8 @@ likely to surprise an operator.
 
 | Surface | Authentication | Authorization |
 | --- | --- | --- |
-| REST `/api/v1` | Yes, when configured | Route scopes for `sb_` tokens; static tokens and sessions unrestricted |
-| Dashboard `/` | Yes, when configured; session cookie | None beyond workspace; every signed-in user can mutate |
+| REST `/api/v1` | Yes, when configured | Roles on every route, plus route scopes for `sb_` tokens |
+| Dashboard `/` | Yes, when configured; session cookie | Roles on every page |
 | gRPC (when `GRPC_ADDR` is set) | `authorization` metadata, **static tokens only** | **None**; reads use the default workspace |
 | GraphQL `/graphql` | **None** | None; the endpoint is currently a fixed schema stub |
 | `/metrics` | **None** | None; mounted on the root router before auth middleware |
@@ -290,7 +355,8 @@ from an incident.
   not, so `POST/GET /api/v1/tokens` and revoke answer
   `503 "token management is not configured"` even though the routes and scopes
   exist. Mint and revoke from the dashboard until the wiring is corrected.
-* **Roles are inert.** See [Roles](#roles-defined-not-enforced).
+* **Roles are enforced on the REST API and the dashboard, but not on gRPC or
+  GraphQL.** See [Roles](#roles).
 * **gRPC reads the default workspace** for every caller, including a token
   bound to another workspace.
 * **GraphQL is unauthenticated** and currently a fixed stub.

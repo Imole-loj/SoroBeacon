@@ -72,7 +72,14 @@ func NewOpsgenie(config json.RawMessage) (Notifier, error) {
 
 // alias returns a deterministic alias for a given (rule_id, event_id) pair.
 // This allows Opsgenie to deduplicate repeated alerts for the same condition.
+//
+// A federated alert has no local rule, so the alias carries the instance it
+// came from as well: without it, two peers forwarding the same event id
+// would share one alert and the second would update the first.
 func (o *Opsgenie) alias(a Alert) string {
+	if a.FederationOrigin != "" {
+		return fmt.Sprintf("sorobeacon-%s-%d-%s", a.FederationOrigin, a.RuleID, a.EventID)
+	}
 	return fmt.Sprintf("sorobeacon-%d-%s", a.RuleID, a.EventID)
 }
 

@@ -1,7 +1,7 @@
 // Package alerts holds delivery-time alert decisions that apply uniformly
-// regardless of rule type: grouping, and now inhibition. It is kept out of
-// internal/rules (which owns matching) and internal/notify (which owns
-// transport) so the decision logic stays unit-testable without a database.
+// regardless of rule type: grouping, inhibition and flapping detection. It is
+// kept out of internal/rules (which owns matching) and internal/notify (which
+// owns transport) so the decision logic stays unit-testable without a database.
 package alerts
 
 import (

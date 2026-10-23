@@ -717,6 +717,45 @@
         }
       }
     },
+    "/channels/{id}/stats": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ID"
+        },
+        {
+          "name": "window",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "default": "24h"
+          },
+          "description": "How far back to aggregate delivery attempts, as a Go duration (\"24h\", \"90m\"; \"7d\" is not valid — use \"168h\"). Defaults to 24h when omitted. Must be greater than zero and at most 2160h (90 days); anything else is 400. The effective value is echoed in the response's window field."
+        }
+      ],
+      "get": {
+        "summary": "Per-channel delivery statistics",
+        "description": "Delivery attempts for one channel aggregated in the database over the requested window: total tries, successes, failures, success rate and the last success/failure timestamps. Every recorded attempt is terminal (success or failed), so total is succeeded plus failed; retries count as separate attempts. A channel with no attempts in the window returns 200 with zero counts, null timestamps and no success_rate — an undefined rate is never rendered as 0% or 100%. An unknown channel is 404. No channel configuration is returned.",
+        "responses": {
+          "200": {
+            "description": "ChannelDeliveryStats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelDeliveryStats"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/channels/bulk": {
       "post": {
         "summary": "Bulk enable or disable channels",
@@ -1539,7 +1578,7 @@
     "/ingest": {
       "post": {
         "summary": "Receive a federated alert from another SoroBeacon instance",
-        "description": "Stores an alert forwarded by another instance without re-evaluating rules. The alert is stamped with its origin and hop count for loop prevention. Requires authentication.",
+        "description": "Stores an alert forwarded by another instance without re-evaluating rules. The monitor and rule ids in the payload belong to the sending instance: they are kept as the alert's source ids, and the stored alert is attached to no local monitor and no local rule. It lands in the workspace of the credential that delivered it. The alert is stamped with its origin and hop count for loop prevention. Requires authentication.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1601,6 +1640,9 @@
             "$ref": "#/components/responses/Error"
           },
           "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -2019,6 +2061,7 @@
       ],
       "post": {
         "summary": "Create a monitor from a template",
+        "description": "The template's rules are checked after the request's parameters are substituted, and its channel ids are checked against the caller's channels, before anything is written. The monitor, its rules and its channel links are then created in one transaction, so a monitor that exists has every rule it was supposed to have.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2045,6 +2088,9 @@
           },
           "404": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
           }
         }
       }
@@ -2057,6 +2103,7 @@
       ],
       "post": {
         "summary": "Bulk create monitors from a template",
+        "description": "Every instance is validated before any of them is written, so a request with one bad instance creates nothing. Each instance is then written in its own transaction, so an instance is never half written. The request as a whole is not one transaction: if an instance fails, the ones before it stay and the response names the instance that failed.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2112,6 +2159,9 @@
           },
           "404": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
           }
         }
       }
@@ -2407,6 +2457,16 @@
             }
           }
         }
+      },
+      "Unprocessable": {
+        "description": "The request was understood but cannot be turned into a valid result. The details array lists every problem, keyed by the field, the rule index or the parameter it belongs to, so a caller can see all of them at once.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
       }
     },
     "schemas": {
@@ -2562,6 +2622,48 @@
               "type": "integer",
               "format": "int64"
             }
+          }
+        }
+      },
+      "ChannelDeliveryStats": {
+        "type": "object",
+        "description": "One channel's delivery outcomes over the requested window. Attempts are counted, not unique alerts: a retry is another attempt.",
+        "properties": {
+          "channel_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "window": {
+            "type": "string",
+            "description": "The window this response covers, as requested (\"24h\" when the parameter was omitted)"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Every delivery attempt inside the window, successful or not"
+          },
+          "succeeded": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "success_rate": {
+            "type": "number",
+            "format": "double",
+            "description": "succeeded / total as a ratio in [0, 1]. Omitted when there were no attempts in the window — an undefined rate is not 0 or 1."
+          },
+          "last_success_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Null when the window holds no successful attempt"
+          },
+          "last_failure_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Null when the window holds no failed attempt"
           }
         }
       },
@@ -3013,6 +3115,24 @@
           },
           "suppression_reason": {
             "type": "string"
+          },
+          "federated": {
+            "type": "boolean",
+            "description": "True when another SoroBeacon instance forwarded this alert. A federated alert belongs to no local monitor and no local rule, so its monitor_id and rule_id are zero."
+          },
+          "federation_origin": {
+            "type": "string",
+            "description": "The instance that forwarded the alert. Empty for a local one."
+          },
+          "source_monitor_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The monitor id on the sending instance. Never a local key."
+          },
+          "source_rule_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The rule id on the sending instance. Never a local key."
           }
         }
       },

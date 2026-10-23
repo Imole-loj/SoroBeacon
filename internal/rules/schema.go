@@ -1,12 +1,15 @@
 package rules
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+)
 
 // FieldSchema describes one parameter field a rule type accepts, used by the
 // interactive rule builder to generate a form instead of requiring raw JSON.
 type FieldSchema struct {
 	Name        string   `json:"name"`
-	Type        string   `json:"type"` // "string", "number", "object", "select"
+	Type        string   `json:"type"` // "string", "number", "boolean", "object", "select"
 	Required    bool     `json:"required"`
 	Description string   `json:"description"`
 	Options     []string `json:"options,omitempty"`
@@ -59,8 +62,16 @@ func (r *Registry) AllSchemas() map[string][]FieldSchema {
 // ParamsFromForm builds a JSON params blob from form key-value pairs using the
 // schema to coerce types. Unknown keys are ignored; missing required fields
 // produce an empty value (validation catches them later).
-func ParamsFromForm(schema []FieldSchema, values map[string]string) json.RawMessage {
+//
+// A number field that does not hold a number is reported by name instead of
+// being dropped, and a boolean field must parse as true or false. The builder
+// used to put the text into the map regardless,
+// ignore the error json.Marshal returned for it, and hand back no params at
+// all — so one typo in one field lost every other field the user had filled
+// in, and the dashboard then complained about a field they had never touched.
+func ParamsFromForm(schema []FieldSchema, values map[string]string) (json.RawMessage, error) {
 	m := make(map[string]any, len(schema))
+	var problems FieldErrors
 	for _, f := range schema {
 		v, ok := values[f.Name]
 		if !ok || v == "" {
@@ -68,14 +79,46 @@ func ParamsFromForm(schema []FieldSchema, values map[string]string) json.RawMess
 		}
 		switch f.Type {
 		case "number":
-			n := json.Number(v)
-			m[f.Name] = n
+			// json.Number carries the text through unchanged, so an integer
+			// larger than float64 can hold survives the round trip. The
+			// validity check is the encoder's own, so a value that could
+			// never be encoded is reported here rather than taking the whole
+			// params blob down with it.
+			if !isJSONNumber(v) {
+				problems = append(problems, FieldError{Field: f.Name, Reason: "must be a number"})
+				continue
+			}
+			m[f.Name] = json.Number(v)
+		case "boolean":
+			// The dashboard renders a true/false select, so the value is
+			// still text at this point. Writing it through unchanged would
+			// produce {"exclude":"false"}, which the evaluators cannot
+			// unmarshal into a bool.
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				problems = append(problems, FieldError{Field: f.Name, Reason: "must be true or false"})
+				continue
+			}
+			m[f.Name] = b
 		default:
 			m[f.Name] = v
 		}
 	}
-	b, _ := json.Marshal(m)
-	return b
+	if len(problems) > 0 {
+		return nil, problems
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// isJSONNumber reports whether s is a JSON number literal. "50" and
+// "123456789012345678901234567890" are numbers; "5x", "1,5" and "" are not.
+func isJSONNumber(s string) bool {
+	_, err := json.Marshal(json.Number(s))
+	return err == nil
 }
 
 // Implement SchemaProvider on built-in evaluators.
@@ -91,7 +134,7 @@ func (EventEmitted) ParamSchema() []FieldSchema {
 func (*ContractAllowlist) ParamSchema() []FieldSchema {
 	return []FieldSchema{
 		{Name: "contract_ids", Type: "object", Required: true, Description: "Allowlisted contract IDs (JSON array); most useful AND-combined with a payload rule inside a composite rule"},
-		{Name: "exclude", Type: "select", Description: "Invert into a denylist (default false)", Options: []string{"true", "false"}, Default: "false"},
+		{Name: "exclude", Type: "boolean", Description: "Invert into a denylist (default false)", Default: "false"},
 	}
 }
 
@@ -122,8 +165,8 @@ func (NumericRange) ParamSchema() []FieldSchema {
 	return []FieldSchema{
 		{Name: "min", Type: "string", Description: "Inclusive lower bound (decimal integer string); at least one of min/max required"},
 		{Name: "max", Type: "string", Description: "Inclusive upper bound (decimal integer string); at least one of min/max required"},
-		{Name: "inclusive", Type: "select", Description: "Boundary values match (default true)", Options: []string{"true", "false"}, Default: "true"},
-		{Name: "outside", Type: "select", Description: "Invert the match: fire outside the range (default false)", Options: []string{"true", "false"}, Default: "false"},
+		{Name: "inclusive", Type: "boolean", Description: "Boundary values match (default true)", Default: "true"},
+		{Name: "outside", Type: "boolean", Description: "Invert the match: fire outside the range (default false)", Default: "false"},
 		{Name: "event_name", Type: "string", Description: "Only consider events with this name"},
 		{Name: "value_path", Type: "string", Description: "Dot path into the event value"},
 	}
@@ -174,7 +217,7 @@ func (TimeWindow) ParamSchema() []FieldSchema {
 		{Name: "start", Type: "string", Required: true, Description: "Window start in UTC (HH:MM, e.g. 09:00)"},
 		{Name: "end", Type: "string", Required: true, Description: "Window end in UTC (HH:MM); earlier than start crosses midnight"},
 		{Name: "days", Type: "object", Description: "Days to match (JSON array of mon|tue|wed|thu|fri|sat|sun); omit to match every day"},
-		{Name: "outside", Type: "select", Description: "Invert the match: fire outside the window (default false)", Options: []string{"true", "false"}, Default: "false"},
+		{Name: "outside", Type: "boolean", Description: "Invert the match: fire outside the window (default false)", Default: "false"},
 	}
 }
 

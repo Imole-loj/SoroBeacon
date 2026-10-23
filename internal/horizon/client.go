@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sorotrail/sorobeacon/internal/stellar"
 	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
-	"github.com/sorotrail/sorobeacon/internal/stellar"
 )
 
 // ClientInterface defines the methods the Source needs from a Horizon client.
@@ -49,15 +49,15 @@ var _ ClientInterface = (*Client)(nil)
 
 // transactionResponse is one transaction from Horizon's /accounts/{id}/transactions.
 type transactionResponse struct {
-	ID                string `json:"id"`
-	PagingToken       string `json:"paging_token"`
-	Hash              string `json:"hash"`
-	Ledger            uint32 `json:"ledger"`
-	CreatedAt         string `json:"created_at"`
-	SourceAccount     string `json:"source_account"`
-	ResultMetaXDR     string `json:"result_meta_xdr"`
-	Successful        bool   `json:"successful"`
-	OperationCount    int    `json:"operation_count"`
+	ID             string `json:"id"`
+	PagingToken    string `json:"paging_token"`
+	Hash           string `json:"hash"`
+	Ledger         uint32 `json:"ledger"`
+	CreatedAt      string `json:"created_at"`
+	SourceAccount  string `json:"source_account"`
+	ResultMetaXDR  string `json:"result_meta_xdr"`
+	Successful     bool   `json:"successful"`
+	OperationCount int    `json:"operation_count"`
 }
 
 // transactionsResponse is the paginated response from Horizon.
@@ -74,14 +74,14 @@ type transactionsResponse struct {
 
 // ContractEventFromMeta wraps a decoded ContractEvent with its context.
 type ContractEventFromMeta struct {
-	Event         *xdr.ContractEvent
-	ContractID    string
-	Ledger        uint32
+	Event          *xdr.ContractEvent
+	ContractID     string
+	Ledger         uint32
 	LedgerClosedAt time.Time
-	TxHash        string
-	TxIndex       uint32
-	OpIndex       uint32
-	EventIndex    uint32
+	TxHash         string
+	TxIndex        uint32
+	OpIndex        uint32
+	EventIndex     uint32
 }
 
 // FetchTransactions fetches one page of transactions for a contract.
@@ -189,33 +189,48 @@ func (c *Client) FetchTransactions(ctx context.Context, contractID string, fromL
 	return events, nextCursor, latestLedger, nil
 }
 
-// GetLatestLedger fetches the latest ledger from Horizon's root endpoint.
-func (c *Client) GetLatestLedger(ctx context.Context) (uint32, error) {
+type rootResponse struct {
+	CoreLatestLedger  uint32 `json:"core_latest_ledger"`
+	NetworkPassphrase string `json:"network_passphrase"`
+}
+
+func (c *Client) root(ctx context.Context) (rootResponse, error) {
 	u := c.baseURL + "/"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return 0, err
+		return rootResponse{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, err
+		return rootResponse{}, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return 0, err
+		return rootResponse{}, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("horizon root status %d: %.200s", res.StatusCode, string(body))
+		return rootResponse{}, fmt.Errorf("horizon root status %d: %.200s", res.StatusCode, string(body))
 	}
-	var root struct {
-		CoreLatestLedger uint32 `json:"core_latest_ledger"`
-	}
+	var root rootResponse
 	if err := json.Unmarshal(body, &root); err != nil {
-		return 0, err
+		return rootResponse{}, err
 	}
-	return root.CoreLatestLedger, nil
+	return root, nil
+}
+
+// GetLatestLedger fetches the latest ledger from Horizon's root endpoint.
+func (c *Client) GetLatestLedger(ctx context.Context) (uint32, error) {
+	root, err := c.root(ctx)
+	return root.CoreLatestLedger, err
+}
+
+// NetworkPassphrase returns the network identity advertised by Horizon's
+// root response, when supported by the deployed version.
+func (c *Client) NetworkPassphrase(ctx context.Context) (string, error) {
+	root, err := c.root(ctx)
+	return root.NetworkPassphrase, err
 }
 
 // GetHealth returns health info for the api.HealthChecker interface.
@@ -254,14 +269,14 @@ func eventToStellarEvent(ev ContractEventFromMeta) stellar.Event {
 	id := fmt.Sprintf("%010d-%s-%d-%d", ev.Ledger, ev.TxHash[:8], ev.OpIndex, ev.EventIndex)
 
 	return stellar.Event{
-		ID:                 id,
-		Type:               "contract",
-		Ledger:             ev.Ledger,
-		LedgerClosedAt:     ev.LedgerClosedAt,
-		ContractID:         ev.ContractID,
-		Topic:              topicB64,
-		Value:              valueB64,
-		TxHash:             ev.TxHash,
+		ID:                       id,
+		Type:                     "contract",
+		Ledger:                   ev.Ledger,
+		LedgerClosedAt:           ev.LedgerClosedAt,
+		ContractID:               ev.ContractID,
+		Topic:                    topicB64,
+		Value:                    valueB64,
+		TxHash:                   ev.TxHash,
 		InSuccessfulContractCall: true,
 	}
 }

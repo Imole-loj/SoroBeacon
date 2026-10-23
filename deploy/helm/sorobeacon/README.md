@@ -43,6 +43,7 @@ each variable does is [`docs/configuration.md`](../../../docs/configuration.md).
 | `config.networkPassphrase` | `NETWORK_PASSPHRASE` |
 | `config.sourceMode` | `SOURCE_MODE` |
 | `config.sorotrailUrl` | `SOROTRAIL_URL` |
+| `config.instanceName` | `INSTANCE_NAME` |
 | `config.httpAddr` | `HTTP_ADDR` |
 | `config.httpMaxBodyBytes` | `HTTP_MAX_BODY_BYTES` |
 | `config.pollInterval` | `POLL_INTERVAL` |

@@ -113,6 +113,11 @@ config:
   # the application's defaults.
   graphqlMaxDepth: ""
   graphqlMaxComplexity: ""
+  # Stable identity for this deployment, stamped as the origin on federated
+  # alerts. Must be unique across instances that federate with each other.
+  # Empty is fine for a standalone instance, but creating a federation channel
+  # then fails with an actionable error; the process still starts.
+  instanceName: ""
   # API + dashboard listen address. Must match service.targetPort.
   httpAddr: ":8080"
   # Maximum request body size for API write endpoints (POST/PATCH/PUT), in
@@ -125,6 +130,10 @@ config:
   # How long since a monitor's last match before the dashboard marks it
   # silent.
   monitorSilentAfter: "24h"
+  # Dampen repeated alert episodes; defaults match internal/config.
+  flappingEpisodes: 3
+  flappingWindow: "15m"
+  flappingQuietAfter: "2m"
   # Ledger lag at which /readyz fails. 0 disables the check, so a lagging
   # poller cannot take itself out of a load balancer without opting in.
   readyzLagThreshold: 0
@@ -305,5 +314,8 @@ oidc:
   # Claim naming the user's workspace, for an issuer that carries one. Empty
   # puts every SSO user in oidc.workspace.
   workspaceClaim: ""
+  # Claim naming the user's role (viewer, editor or admin), for an issuer that
+  # carries one. Empty makes every SSO user an admin.
+  roleClaim: ""
   # How long a started login may take to come back.
   loginStateTTL: "10m"

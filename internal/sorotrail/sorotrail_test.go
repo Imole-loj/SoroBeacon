@@ -148,6 +148,20 @@ func TestClientHealth(t *testing.T) {
 	}
 }
 
+func TestClientNetworkPassphrase(t *testing.T) {
+	srv := &stubSoroTrail{statsJSON: `{"first_ledger":100,"last_ledger":200,"network_passphrase":"test-passphrase"}`}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	passphrase, err := NewClient(ts.URL, nil).NetworkPassphrase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if passphrase != "test-passphrase" {
+		t.Fatalf("network passphrase = %q, want test-passphrase", passphrase)
+	}
+}
+
 func TestSourceSkipsMalformedEvent(t *testing.T) {
 	srv := &stubSoroTrail{
 		eventsJSON: `{

@@ -288,6 +288,23 @@ func (p *Principal) Unrestricted() bool {
 	return p != nil && !p.restricted
 }
 
+// Restricted reports the opposite of Unrestricted: the caller's grant is a
+// scope list, held in a database row. It is what tells the role resolution
+// where to look for the caller's reach.
+func (p *Principal) Restricted() bool {
+	return p != nil && p.restricted
+}
+
+// Scopes returns the grant a scoped token holds. It is empty for a
+// credential that carries no scope list, which is not the same as a token
+// that may do everything: that one is Unrestricted.
+func (p *Principal) Scopes() []Scope {
+	if p == nil {
+		return nil
+	}
+	return p.scopes
+}
+
 // TokenStore is the persistence a Manager needs. It is store's own shape — the
 // methods are store.Store's, and store.Store satisfies it — declared here so
 // this package stays testable without a database and so the token vocabulary has

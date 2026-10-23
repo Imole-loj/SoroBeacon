@@ -139,6 +139,8 @@ DATABASE_MAX_CONNS: {{ .Values.database.maxConns | int64 | quote }}
 DATABASE_MIN_CONNS: {{ .Values.database.minConns | int64 | quote }}
 DATABASE_MAX_CONN_LIFETIME: {{ .Values.database.maxConnLifetime | quote }}
 DATABASE_MAX_CONN_IDLE_TIME: {{ .Values.database.maxConnIdleTime | quote }}
+DATABASE_CONNECT_ATTEMPTS: {{ .Values.database.connectAttempts | int64 | quote }}
+DATABASE_CONNECT_DELAY: {{ .Values.database.connectDelay | quote }}
 RPC_URLS: {{ .Values.config.rpcUrls | quote }}
 GRPC_ADDR: {{ .Values.config.grpcAddr | quote }}
 REORG_TRACKING_WINDOW: {{ .Values.config.reorgTrackingWindow | quote }}

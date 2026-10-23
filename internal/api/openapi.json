@@ -1640,6 +1640,71 @@
         }
       }
     },
+    "/triggers": {
+      "post": {
+        "summary": "Trigger alert evaluation from an external event",
+        "description": "Accepts an external event and asks the instance to evaluate it into an alert. Requires authentication.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "monitor_id"
+                ],
+                "properties": {
+                  "monitor_id": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Monitor the event applies to"
+                  },
+                  "event": {
+                    "type": "string",
+                    "format": "byte",
+                    "description": "Event payload, base64-encoded by JSON"
+                  },
+                  "source": {
+                    "type": "string",
+                    "description": "Where the event came from"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Trigger accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "alert_id": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Combined health report",

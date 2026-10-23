@@ -311,6 +311,9 @@ func (s *Server) Routes() chi.Router {
 
 	mux.Post("/monitors/import", s.importContracts)
 	mux.Post("/ingest", s.ingest)
+	// Trigger endpoint: accept external events and create alerts via rule
+	// evaluation.
+	mux.Post("/triggers", s.triggerHandler)
 
 	mux.Route("/tokens", func(r chi.Router) {
 		r.Post("/", s.createToken)

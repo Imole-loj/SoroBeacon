@@ -321,6 +321,8 @@ curl -s -X POST localhost:8080/api/v1/monitors/1/rules -d '{
 }'
 ```
 
+See [docs/rules/event_emitted.md](docs/rules/event_emitted.md).
+
 **`value_threshold`** — numeric comparison on the event's decoded value.
 `value_path` is a dot path into the value (map keys / array indexes); omit it
 when the value itself is the number. Use a string threshold for integers
@@ -338,7 +340,7 @@ curl -s -X POST localhost:8080/api/v1/monitors/1/rules -d '{
 }'
 ```
 
-`comparison` is one of `gt`, `gte`, `lt`, `lte`, `eq`, `neq`.
+`comparison` is one of `gt`, `gte`, `lt`, `lte`, `eq`, `neq`. See [docs/rules/value_threshold.md](docs/rules/value_threshold.md).
 
 **`token_event`** — SEP-41 token events, with the interface's topic layout
 built in. `event` is one of `transfer`, `mint`, `burn`, `clawback`,

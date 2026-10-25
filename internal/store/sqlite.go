@@ -1765,7 +1765,7 @@ func (s *SQLite) GroupAlerts(ctx context.Context, key string, windowStart time.T
 
 func (s *SQLite) GetAlert(ctx context.Context, id int64) (*Alert, error) {
 	a, err := scanSQLiteAlert(s.db.QueryRowContext(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, inhibited_by_rule_id, suppressed, suppression_reason, network, federated, federation_origin, source_monitor_id, source_rule_id FROM alerts WHERE id = ? AND workspace_id = ?`, id, workspaceID(ctx)))
+		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id FROM alerts WHERE id = ? AND workspace_id = ?`, id, workspaceID(ctx)))
 	if err != nil {
 		return nil, err
 	}
@@ -1889,7 +1889,7 @@ func (s *SQLite) DeleteDeadLetter(ctx context.Context, id int64) error {
 }
 
 func (s *SQLite) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error) {
-	q := `SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, inhibited_by_rule_id, suppressed, suppression_reason, network, federated, federation_origin, source_monitor_id, source_rule_id FROM alerts WHERE 1 = 1`
+	q := `SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id FROM alerts WHERE 1 = 1`
 	args := []any{}
 	// Conditional because ListAlerts serves two callers with different scopes:
 	// the API listing (one workspace) and the frequency rule's match-log
@@ -1914,6 +1914,12 @@ func (s *SQLite) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error)
 	if f.Network != "" {
 		q += ` AND network = ?`
 		args = append(args, f.Network)
+	}
+	switch f.Acknowledged {
+	case "acknowledged":
+		q += ` AND acknowledged_at IS NOT NULL`
+	case "unacknowledged":
+		q += ` AND acknowledged_at IS NULL`
 	}
 	if pattern := AlertSearchPattern(f.Query); pattern != "" {
 		// The same literal pattern the Postgres backend feeds ILIKE: SQLite's
@@ -1990,8 +1996,9 @@ func scanSQLiteAlert(r rowScanner) (Alert, error) {
 	var suppressionReason string
 	var monitorID, ruleID sql.NullInt64
 	var origin sql.NullString
+	var acknowledged, acknowledgedBy sql.NullString
 	var sourceMonitorID, sourceRuleID sql.NullInt64
-	if err := r.Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &payload, &enrichment, &created, &ledger, &retracted, &inhibited, &suppressed, &suppressionReason, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID); err != nil {
+	if err := r.Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &payload, &enrichment, &created, &ledger, &retracted, &inhibited, &suppressed, &suppressionReason, &acknowledged, &acknowledgedBy, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID); err != nil {
 		return a, mapSQLiteErr(err)
 	}
 	if monitorID.Valid {
@@ -2030,6 +2037,20 @@ func scanSQLiteAlert(r rowScanner) (Alert, error) {
 			return a, err
 		}
 		a.RetractedAt = &t
+	}
+	// acknowledged_at and acknowledged_by were unreadable before 0034 taught
+	// SQLite to select them; a row written before then has the timestamp
+	// without the actor, which reads back as an acknowledgement of unknown
+	// origin rather than an unacknowledged alert.
+	if acknowledged.Valid && acknowledged.String != "" {
+		t, err := parseSQLiteTime(acknowledged.String)
+		if err != nil {
+			return a, err
+		}
+		a.AcknowledgedAt = &t
+	}
+	if acknowledgedBy.Valid {
+		a.AcknowledgedBy = acknowledgedBy.String
 	}
 	return a, nil
 }
@@ -2126,7 +2147,7 @@ func (s *SQLite) ExpiredAlerts(ctx context.Context, cutoff time.Time, limit int)
 		limit = DefaultPruneBatch
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, inhibited_by_rule_id, suppressed, suppression_reason, network, federated, federation_origin, source_monitor_id, source_rule_id
+		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		   FROM alerts WHERE created_at < ? ORDER BY created_at ASC, id ASC LIMIT ?`,
 		sqliteTimeString(cutoff), limit)
 	if err != nil {
@@ -2772,6 +2793,15 @@ func (s *SQLite) ListAuditEntries(ctx context.Context, f AuditFilter) ([]AuditEn
 	if !f.To.IsZero() {
 		where = append(where, "created_at <= ?")
 		args = append(args, sqliteTimeString(f.To))
+	}
+	if f.Actor != "" {
+		where = append(where, "actor = ?")
+		args = append(args, f.Actor)
+	}
+	if f.AfterID != 0 {
+		// The listing is id DESC, so the next page holds strictly smaller ids.
+		where = append(where, "id < ?")
+		args = append(args, f.AfterID)
 	}
 	args = append(args, clampAuditLimit(f.Limit))
 	q := `SELECT id, actor, action, target_type, target_id, diff, created_at FROM audit_log WHERE ` +

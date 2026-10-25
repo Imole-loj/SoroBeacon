@@ -163,7 +163,9 @@ func TestListAuditRejectsBadFilters(t *testing.T) {
 	srv := httptest.NewServer(s.Routes())
 	defer srv.Close()
 
-	for _, q := range []string{"target_type=alert", "target_id=x", "from=yesterday", "to=nope", "limit=0"} {
+	// "alert" is deliberately absent: an acknowledgement writes an alert
+	// entry, so the type is valid now and a widget is what is left to reject.
+	for _, q := range []string{"target_type=widget", "target_id=x", "from=yesterday", "to=nope", "limit=0", "cursor=zero"} {
 		res, err := http.Get(srv.URL + "/audit?" + q)
 		if err != nil {
 			t.Fatal(err)

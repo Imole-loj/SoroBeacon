@@ -94,6 +94,7 @@ func runStoreConformance(t *testing.T, newStore conformanceFactory) {
 	t.Run("UpdateChannelRenameKeepsHealth", func(t *testing.T) { testUpdateChannelRenameKeepsHealth(t, newStore) })
 	t.Run("ChannelHealthUnknownChannelIgnored", func(t *testing.T) { testChannelHealthUnknownChannelIsIgnored(t, newStore) })
 	t.Run("AuditLogAppendOnlyFiltersAndNoSecrets", func(t *testing.T) { testAuditLog(t, newStore) })
+	t.Run("AlertAcknowledgementRoundTrip", func(t *testing.T) { testAlertAcknowledgement(t, newStore) })
 	t.Run("ChannelDigestSettingsAndQueue", func(t *testing.T) { testChannelDigest(t, newStore) })
 	// The tenancy suite. These are the assertions the workspace boundary rests
 	// on, so they run against both backends like everything else.
@@ -204,10 +205,82 @@ func testAuditLog(t *testing.T, newStore conformanceFactory) {
 	require.NoError(t, err)
 	require.Len(t, limited, 1)
 
+	// The actor filter answers "who touched this channel?" on the dashboard's
+	// audit page, so it has to select exactly one credential's rows.
+	byActor, err := st.ListAuditEntries(ctx, AuditFilter{Actor: "req-2"})
+	require.NoError(t, err)
+	require.Len(t, byActor, 1)
+	assert.Equal(t, "req-2", byActor[0].Actor)
+
+	// The cursor continues downwards: everything after it has a smaller id.
+	page1, err := st.ListAuditEntries(ctx, AuditFilter{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, page1, 2)
+	page2, err := st.ListAuditEntries(ctx, AuditFilter{Limit: 2, AfterID: page1[1].ID})
+	require.NoError(t, err)
+	require.Len(t, page2, 1)
+	assert.Equal(t, entries[0].ID, page2[0].ID, "the cursor page picks up where the first left off")
+	for _, e := range page2 {
+		assert.Less(t, e.ID, page1[1].ID, "a cursor page only holds ids below the cursor")
+	}
+
 	// A time window that excludes everything returns nothing.
 	none, err := st.ListAuditEntries(ctx, AuditFilter{From: time.Now().Add(time.Hour)})
 	require.NoError(t, err)
 	assert.Empty(t, none)
+}
+
+// testAlertAcknowledgement is the dashboard acknowledge path at the store
+// level: the actor lands on the row, the acknowledgement reads back through
+// both the get and the list (which is what the page and its filter render
+// from), and a repeat keeps the first actor rather than rewriting who got
+// there first. It runs against both backends, which is what pins SQLite to
+// reading the acknowledgement columns it historically ignored.
+func testAlertAcknowledgement(t *testing.T, newStore conformanceFactory) {
+	st := newStore(t)
+	ctx := context.Background()
+
+	m := &Monitor{Name: "m", ContractIDs: []string{"C"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m))
+	r := &Rule{MonitorID: m.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r))
+	a := &Alert{MonitorID: m.ID, RuleID: r.ID, EventID: "ev-ack"}
+	outcome, err := st.CreateAlert(ctx, a)
+	require.NoError(t, err)
+	require.Equal(t, AlertCreated, outcome)
+
+	// Unacknowledged before: both the row and the filter agree on that.
+	open, err := st.ListAlerts(ctx, AlertFilter{Acknowledged: "unacknowledged"})
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	stamped, err := st.ListAlerts(ctx, AlertFilter{Acknowledged: "acknowledged"})
+	require.NoError(t, err)
+	assert.Empty(t, stamped, "an untouched alert is not acknowledged")
+
+	require.NoError(t, st.AcknowledgeAlert(ctx, a.ID, "oncall"))
+	got, err := st.GetAlert(ctx, a.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.AcknowledgedAt, "acknowledgement must read back from the row")
+	assert.Equal(t, "oncall", got.AcknowledgedBy)
+
+	stamped, err = st.ListAlerts(ctx, AlertFilter{Acknowledged: "acknowledged"})
+	require.NoError(t, err)
+	require.Len(t, stamped, 1)
+	assert.Equal(t, a.ID, stamped[0].ID)
+	require.NotNil(t, stamped[0].AcknowledgedAt, "the list must carry the stamp, not only the get")
+	assert.Equal(t, "oncall", stamped[0].AcknowledgedBy, "the list must carry the actor too")
+
+	// Idempotent, and the first actor wins.
+	require.NoError(t, st.AcknowledgeAlert(ctx, a.ID, "later-op"))
+	again, err := st.GetAlert(ctx, a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "oncall", again.AcknowledgedBy, "a repeat acknowledgement keeps the first actor")
+
+	// The other half of the filter pair still excludes the acknowledged row.
+	open, err = st.ListAlerts(ctx, AlertFilter{Acknowledged: "unacknowledged"})
+	require.NoError(t, err)
+	assert.Empty(t, open)
+	require.ErrorIs(t, st.AcknowledgeAlert(ctx, a.ID+9999, "oncall"), ErrNotFound)
 }
 
 // TestClampAlertSeriesDays pins the overview-chart window bounds. It is pure

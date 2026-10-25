@@ -1,6 +1,7 @@
 {{define "content"}}
 <h1>Edit channel</h1>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .CanAdmin}}<p><a href="/audit?target_type=channel&target_id={{.Channel.ID}}">Change history for this channel &rarr;</a></p>{{end}}
 <fieldset>
   <legend>{{.Channel.Name}}</legend>
   <form method="post" action="/channels/{{.Channel.ID}}">

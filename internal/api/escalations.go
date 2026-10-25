@@ -169,13 +169,19 @@ func (s *Server) deleteMonitorEscalation(w http.ResponseWriter, r *http.Request)
 // acknowledgeAlert serves POST /alerts/{id}/acknowledge. Acknowledging stops
 // any escalation attached to the alert, so the on-call engineer who has seen
 // the page does not get escalated on top of it.
+//
+// The store method is the whole of the logic — the dashboard's acknowledge
+// button calls the same one — so the two entry points cannot drift into
+// disagreeing about what acknowledgement means. The actor recorded on the row
+// is this request's credential label (or its request id when the credential
+// carries no label).
 func (s *Server) acknowledgeAlert(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
 	if err != nil {
 		writeErr(w, r, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if err := s.store.AcknowledgeAlert(r.Context(), id); err != nil {
+	if err := s.store.AcknowledgeAlert(r.Context(), id, actor(r)); err != nil {
 		s.fail(w, r, err)
 		return
 	}

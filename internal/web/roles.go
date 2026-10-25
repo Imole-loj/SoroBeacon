@@ -64,10 +64,14 @@ var routeRoles = auth.NewRouteTable(map[string]auth.Role{
 	"POST /channels/bulk":                       auth.RoleEditor,
 	"POST /channels/{id}/duplicate":             auth.RoleEditor,
 
-	// What gets delivered, and when.
+	// What gets delivered, and when. Acknowledging is writing to the alert
+	// the same way a retry is: it stops escalation, so it is an editor's
+	// action, and the API table asks the same role for its own route to the
+	// same store method.
 	"POST /maintenance":                              auth.RoleEditor,
 	"POST /maintenance/{id}/delete":                  auth.RoleEditor,
 	"POST /alerts/{id}/deliveries/{channelID}/retry": auth.RoleEditor,
+	"POST /alerts/{id}/acknowledge":                  auth.RoleEditor,
 	"POST /dead-letters/{id}/redrive":                auth.RoleEditor,
 
 	// Saved searches are one operator's own view of the alert history, so
@@ -81,4 +85,9 @@ var routeRoles = auth.NewRouteTable(map[string]auth.Role{
 	"GET /tokens":              auth.RoleAdmin,
 	"POST /tokens":             auth.RoleAdmin,
 	"POST /tokens/{id}/revoke": auth.RoleAdmin,
+
+	// The audit log names the credential behind every change, so reading it
+	// is administrative the way the API's own route makes it: the role table
+	// in internal/api/roles.go asks admin for GET /api/v1/audit too.
+	"GET /audit": auth.RoleAdmin,
 })

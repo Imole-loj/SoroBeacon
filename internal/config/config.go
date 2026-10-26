@@ -540,28 +540,31 @@ func LoadProblems() (Config, []Problem) {
 	if v := lookupConfigValue("HEARTBEAT_URL", fileValues); v != "" {
 		u, err := url.Parse(v)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return cfg, fmt.Errorf("invalid HEARTBEAT_URL: want an http(s) URL with a host (the URL itself is not printed because its path is a credential)")
+			ps.add("HEARTBEAT_URL", fmt.Errorf("invalid HEARTBEAT_URL: want an http(s) URL with a host (the URL itself is not printed because its path is a credential)"))
+		} else {
+			cfg.HeartbeatURL = v
 		}
-		cfg.HeartbeatURL = v
 	}
 	if v := lookupConfigValue("HEARTBEAT_INTERVAL", fileValues); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			return cfg, fmt.Errorf("invalid HEARTBEAT_INTERVAL %q (want a positive duration like 30s or 5m)", v)
+			ps.add("HEARTBEAT_INTERVAL", fmt.Errorf("invalid HEARTBEAT_INTERVAL %q (want a positive duration like 30s or 5m)", v))
+		} else {
+			cfg.HeartbeatInterval = d
 		}
-		cfg.HeartbeatInterval = d
 	}
 	if v := lookupConfigValue("HEARTBEAT_FAILURE_SUFFIX", fileValues); v != "" {
 		if !strings.HasPrefix(v, "/") {
-			return cfg, fmt.Errorf("invalid HEARTBEAT_FAILURE_SUFFIX %q (want a path suffix starting with /, like /fail)", v)
+			ps.add("HEARTBEAT_FAILURE_SUFFIX", fmt.Errorf("invalid HEARTBEAT_FAILURE_SUFFIX %q (want a path suffix starting with /, like /fail)", v))
+		} else {
+			cfg.HeartbeatFailureSuffix = v
 		}
-		cfg.HeartbeatFailureSuffix = v
 	}
 	if cfg.HeartbeatFailureSuffix != "" && cfg.HeartbeatURL == "" {
-		return cfg, fmt.Errorf("HEARTBEAT_FAILURE_SUFFIX %q is set but HEARTBEAT_URL is not: there is no endpoint to fail", cfg.HeartbeatFailureSuffix)
+		ps.add("HEARTBEAT_FAILURE_SUFFIX", fmt.Errorf("HEARTBEAT_FAILURE_SUFFIX %q is set but HEARTBEAT_URL is not: there is no endpoint to fail", cfg.HeartbeatFailureSuffix))
 	}
 	if cfg.HeartbeatURL != "" && cfg.HeartbeatInterval <= cfg.PollInterval {
-		return cfg, fmt.Errorf("HEARTBEAT_INTERVAL %s must be longer than POLL_INTERVAL %s: a ping is sent only when a new successful poll appeared since the last check, so a heartbeat at or below the poll interval would read as no progress", cfg.HeartbeatInterval, cfg.PollInterval)
+		ps.add("HEARTBEAT_INTERVAL", fmt.Errorf("HEARTBEAT_INTERVAL %s must be longer than POLL_INTERVAL %s: a ping is sent only when a new successful poll appeared since the last check, so a heartbeat at or below the poll interval would read as no progress", cfg.HeartbeatInterval, cfg.PollInterval))
 	}
 	if v := lookupConfigValue("RATE_LIMIT_RPS", fileValues); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)

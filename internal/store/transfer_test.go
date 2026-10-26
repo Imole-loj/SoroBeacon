@@ -68,7 +68,7 @@ func seedTransferFixture(t *testing.T, url string, alertCount int) *transferFixt
 			INSERT INTO alerts (monitor_id, rule_id, event_id, payload, created_at, ledger, severity)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			m.ID, r.ID, fmt.Sprintf("ev-%d", i),
-			fmt.Sprintf(`{"contract_id":"CA","n":%d}`, i),
+			fmt.Sprintf(`{"contract_id":"CA","n":%d,"note":"<escaped> & raw"}`, i),
 			sqliteTimeString(base.Add(time.Duration(i)*time.Minute)),
 			5000+i, "critical")
 		require.NoError(t, err)
@@ -136,8 +136,6 @@ func TestTransferCopiesEveryTableSQLiteToSQLite(t *testing.T) {
 	}
 	assert.Equal(t, int64(transferFixtureAlerts), alertRep.Inserted)
 	assert.GreaterOrEqual(t, progressCalls, transferFixtureAlerts/25, "every 25-row batch reports progress")
-	assert.Equal(t, "alerts", lastProgress.table)
-	assert.Equal(t, int64(transferFixtureAlerts), lastProgress.total)
 
 	// Every table's row count matches the source exactly.
 	srcCounts := countsByTable(t, fx.src)
@@ -145,6 +143,20 @@ func TestTransferCopiesEveryTableSQLiteToSQLite(t *testing.T) {
 	for _, table := range transferTables {
 		assert.Equal(t, srcCounts[table.name], dstCounts[table.name], "row count of %s", table.name)
 	}
+
+	// The plan runs in dependency order, so alerts is followed by its own
+	// children (alert_dedup, delivery_attempts, alert_escalations). The last
+	// progress line therefore belongs to the last plan table that had rows,
+	// and it reports that table's full count rather than a partial batch.
+	var wantLast string
+	var wantLastRows int64
+	for _, table := range transferTables {
+		if srcCounts[table.name] > 0 {
+			wantLast, wantLastRows = table.name, srcCounts[table.name]
+		}
+	}
+	assert.Equal(t, wantLast, lastProgress.table, "the last progress line is the last plan table with rows")
+	assert.Equal(t, wantLastRows, lastProgress.total)
 
 	ctx := context.Background()
 	// IDs are preserved, so references resolve without remapping.

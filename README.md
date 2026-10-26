@@ -99,6 +99,7 @@ vs optional, secrets, and `SOURCE_MODE`-only notes — is
 | `HTTP_MAX_BODY_BYTES` | `1048576` (1 MiB)                 | Max API write-body size; GET is unaffected   |
 | `CORS_ALLOWED_ORIGINS` | _(empty, CORS off)_             | Comma-separated browser Origins; empty disables CORS |
 | `MONITOR_SILENT_AFTER` | `24h`                            | Mark monitors silent on the dashboard after this much time since last match |
+| `SHUTDOWN_GRACE_PERIOD` | `30s`                           | How long to wait for in-flight alert deliveries to finish on shutdown before they are persisted as retries |
 | `ALERT_RETENTION` | _(unset, keep forever)_             | How long to keep alerts; `90d`, `24h`. Postgres drops whole expired partitions |
 | `ALERT_ENRICHMENT_URL` | _(unset, off)_                  | HTTP JSON endpoint called on every alert to attach operator context; see the [enrichment guide](docs/guides/alert-enrichment.md) |
 | `ALERT_ENRICHMENT_TIMEOUT` | `2s`                        | Budget for one enrichment call; slow service costs the enrichment, not the alert |

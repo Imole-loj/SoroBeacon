@@ -187,6 +187,7 @@ func TestRender_ConfigDefaultsMatchTheApplication(t *testing.T) {
 		"POLL_INTERVAL":               "5s",
 		"LOG_LEVEL":                   "info",
 		"MONITOR_SILENT_AFTER":        "24h",
+		"SHUTDOWN_GRACE_PERIOD":       "30s",
 		"READYZ_LAG_THRESHOLD":        "0",
 		"RATE_LIMIT_RPS":              "0",
 		"RATE_LIMIT_BURST":            "0",

@@ -191,6 +191,11 @@
           "pattern": "^[0-9]+(ms|s|m|h)$",
           "description": "How long since a monitor's last match before it is shown as silent."
         },
+        "shutdownGracePeriod": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)$",
+          "description": "How long to wait for in-flight alert deliveries during shutdown."
+        },
         "flappingEpisodes": {
           "type": "integer",
           "minimum": 1,

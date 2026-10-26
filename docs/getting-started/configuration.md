@@ -55,6 +55,7 @@ The file is a convenience for operators; do not put secrets in it unless you hav
 | `POLL_INTERVAL` | `5s` | How often the poller calls `getEvents`. Minimum `1s`. |
 | `HTTP_ADDR` | `:8080` | Listen address (`host:port`) for the API and dashboard. Empty host means all interfaces. Validated at load. |
 | `MONITOR_SILENT_AFTER` | `24h` | How long since `last_matched_at` (event ledger close time) before the monitors list marks a monitor silent. |
+| `SHUTDOWN_GRACE_PERIOD` | `30s` | How long to wait for in-flight alert deliveries to finish once the process is asked to stop, before they are persisted as retries. Must be greater than 0. |
 | `HTTP_ADDR` | `:8080` | Listen address for the API and dashboard. |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (structured JSON via `log/slog`). |
 | `READYZ_LAG_THRESHOLD` | `0` (disabled) | Fail `/readyz` when poller ledger lag (chain tip minus last processed ledger) exceeds this. Unset or `0` leaves existing probes unchanged. |

@@ -49,6 +49,7 @@ each variable does is [`docs/configuration.md`](../../../docs/configuration.md).
 | `config.pollInterval` | `POLL_INTERVAL` |
 | `config.logLevel` | `LOG_LEVEL` |
 | `config.monitorSilentAfter` | `MONITOR_SILENT_AFTER` |
+| `config.shutdownGracePeriod` | `SHUTDOWN_GRACE_PERIOD` |
 | `config.readyzLagThreshold` | `READYZ_LAG_THRESHOLD` |
 | `config.channelDisableAfterFailures` | `CHANNEL_DISABLE_AFTER_FAILURES` |
 | `config.rateLimitRps` | `RATE_LIMIT_RPS` |

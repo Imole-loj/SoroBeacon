@@ -130,6 +130,9 @@ config:
   # How long since a monitor's last match before the dashboard marks it
   # silent.
   monitorSilentAfter: "24h"
+  # How long to wait for in-flight alert deliveries to finish once the
+  # process is asked to stop, before they are persisted as retries.
+  shutdownGracePeriod: "30s"
   # Dampen repeated alert episodes; defaults match internal/config.
   flappingEpisodes: 3
   flappingWindow: "15m"

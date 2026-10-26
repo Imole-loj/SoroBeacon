@@ -808,6 +808,12 @@ func (s *server) job(ctx context.Context) {
 		start(s.heartbeat.Run)
 	}
 	s.poller.Run(ctx)
+	// Shutdown the dispatcher gracefully, waiting for in-flight deliveries
+	dispatcherCtx, dispatcherCancel := context.WithTimeout(ctx, s.cfg.ShutdownGracePeriod)
+	if err := s.dispatcher.Shutdown(dispatcherCtx, s.cfg.ShutdownGracePeriod); err != nil {
+		s.log.Error("dispatcher shutdown error", "err", err)
+	}
+	dispatcherCancel()
 	wg.Wait()
 }
 

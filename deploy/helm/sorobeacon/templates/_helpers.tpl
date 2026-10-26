@@ -115,6 +115,7 @@ HTTP_MAX_BODY_BYTES: {{ .Values.config.httpMaxBodyBytes | int64 | quote }}
 POLL_INTERVAL: {{ .Values.config.pollInterval | quote }}
 LOG_LEVEL: {{ .Values.config.logLevel | quote }}
 MONITOR_SILENT_AFTER: {{ .Values.config.monitorSilentAfter | quote }}
+SHUTDOWN_GRACE_PERIOD: {{ .Values.config.shutdownGracePeriod | quote }}
 FLAPPING_EPISODES: {{ .Values.config.flappingEpisodes | int64 | quote }}
 FLAPPING_WINDOW: {{ .Values.config.flappingWindow | quote }}
 FLAPPING_QUIET_AFTER: {{ .Values.config.flappingQuietAfter | quote }}

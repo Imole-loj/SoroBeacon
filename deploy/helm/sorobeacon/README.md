@@ -50,6 +50,9 @@ each variable does is [`docs/configuration.md`](../../../docs/configuration.md).
 | `config.logLevel` | `LOG_LEVEL` |
 | `config.monitorSilentAfter` | `MONITOR_SILENT_AFTER` |
 | `config.readyzLagThreshold` | `READYZ_LAG_THRESHOLD` |
+| `config.heartbeatUrl` | `HEARTBEAT_URL` |
+| `config.heartbeatInterval` | `HEARTBEAT_INTERVAL` |
+| `config.heartbeatFailureSuffix` | `HEARTBEAT_FAILURE_SUFFIX` |
 | `config.channelDisableAfterFailures` | `CHANNEL_DISABLE_AFTER_FAILURES` |
 | `config.rateLimitRps` | `RATE_LIMIT_RPS` |
 | `config.rateLimitBurst` | `RATE_LIMIT_BURST` |

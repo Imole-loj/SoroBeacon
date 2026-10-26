@@ -193,11 +193,11 @@ func testWorkspaceIsolation(t *testing.T, newStore conformanceFactory) {
 
 	// Acknowledging stops escalation, so a cross-tenant id must be refused
 	// before the write rather than acknowledged and then reported missing.
-	assert.ErrorIs(t, st.AcknowledgeAlert(beta, acmeAlert.ID), ErrNotFound, "another tenant's alert cannot be acknowledged")
+	assert.ErrorIs(t, st.AcknowledgeAlert(beta, acmeAlert.ID, "beta-op"), ErrNotFound, "another tenant's alert cannot be acknowledged")
 	unacked, err := st.GetAlert(acme, acmeAlert.ID)
 	require.NoError(t, err)
 	assert.Nil(t, unacked.AcknowledgedAt, "the refused acknowledgement must leave the alert alone")
-	require.NoError(t, st.AcknowledgeAlert(acme, acmeAlert.ID), "the owner can still acknowledge it")
+	require.NoError(t, st.AcknowledgeAlert(acme, acmeAlert.ID, "acme-op"), "the owner can still acknowledge it")
 
 	// Delivery attempts are scoped through their alert.
 	require.NoError(t, st.RecordDeliveryAttempt(system, &DeliveryAttempt{

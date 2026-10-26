@@ -104,6 +104,7 @@ var templateFuncs = template.FuncMap{
 	"relTime":       relTime,
 	"relTimePtr":    relTimePtr,
 	"severityClass": severityClass,
+	"auditFields":   auditFields,
 }
 
 const tsLayout = "2006-01-02 15:04:05"
@@ -230,7 +231,7 @@ func New(st store.Store, reg *rules.Registry, f *notify.Factory, log *slog.Logge
 	// Every page the dashboard can render. A page missing from this list is a
 	// nil template at request time, which is a panic rather than a 500, so the
 	// list and the templates directory have to agree.
-	for _, page := range []string{"index", "monitors", "monitor", "channels", "channel-edit", "channel-delete", "alerts", "alert", "maintenance", "login", "error", "rulebuilder", "searches", "tokens", "deadletters"} {
+	for _, page := range []string{"index", "monitors", "monitor", "channels", "channel-edit", "channel-delete", "alerts", "alert", "audit", "maintenance", "login", "error", "rulebuilder", "searches", "tokens", "deadletters"} {
 		t, err := template.New("layout.html").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html", "templates/shortcuts.html", "templates/"+page+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse template %s: %w", page, err)
@@ -406,7 +407,10 @@ func (s *Server) Routes() chi.Router {
 	mux.Get("/alerts", s.alerts)
 	mux.Get("/alerts/{id}/deliveries", s.alertDeliveries)
 	mux.Post("/alerts/{id}/deliveries/{channelID}/retry", s.retryDelivery)
+	mux.Post("/alerts/{id}/acknowledge", s.acknowledgeAlert)
 	mux.Get("/alerts/{id}", s.alertDetail)
+
+	mux.Get("/audit", s.auditPage)
 
 	mux.Get("/dead-letters", s.listDeadLetters)
 	mux.Post("/dead-letters/{id}/redrive", s.redriveDeadLetter)
@@ -429,6 +433,7 @@ var navSection = map[string]string{
 	"channels":    "channels",
 	"alerts":      "alerts",
 	"alert":       "alerts",
+	"audit":       "audit",
 	"maintenance": "maintenance",
 	"searches":    "alerts",
 }
@@ -447,6 +452,15 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 		// The sign-in page has nothing to sign out of, so it hides the header's
 		// sign-out button even though authentication is on.
 		m["AuthEnabled"] = s.authEnabled() && page != "login"
+		// CanWrite and CanAdmin gate what the page *offers* — an acknowledge
+		// button a viewer cannot use is a broken button, not a protected one.
+		// The role table is what actually refuses a caller without the role;
+		// hiding the control is the courtesy that comes with it. With no
+		// credential configured RoleForRequest reports admin, so the open
+		// dashboard shows every control it has.
+		role, _ := s.auth.RoleForRequest(r)
+		m["CanWrite"] = role.AtLeast(auth.RoleEditor)
+		m["CanAdmin"] = role.AtLeast(auth.RoleAdmin)
 		m["SessionHours"] = int(s.auth.SessionTTL().Hours())
 		m["Version"] = displayVersion(buildinfo.Version)
 		m["Commit"] = displayCommit(buildinfo.Commit)
@@ -521,22 +535,57 @@ func tzFromRequest(r *http.Request) string {
 
 // safeReturn keeps the timezone POST from bouncing to an external Referer.
 func safeReturn(r *http.Request) string {
+	return returnTo(r, "/")
+}
+
+// returnTo is safeReturn with a destination of its own: a mutation posted
+// from a page goes back to that page — filters, cursor and all — and a
+// missing, unparseable or foreign Referer lands on fallback. For the
+// acknowledge action that is the alert's own page, the one place that shows
+// what the acknowledgement did.
+func returnTo(r *http.Request, fallback string) string {
 	ref := r.Header.Get("Referer")
 	if ref == "" {
-		return "/"
+		return fallback
 	}
 	u, err := url.Parse(ref)
 	if err != nil {
-		return "/"
+		return fallback
 	}
 	if u.Host != "" && u.Host != r.Host {
-		return "/"
+		return fallback
 	}
 	p := u.RequestURI()
 	if p == "" || !strings.HasPrefix(p, "/") {
-		return "/"
+		return fallback
 	}
 	return p
+}
+
+// withAckFlag appends the result of an acknowledge POST to the page it
+// redirects back to. Only "already" is ever set: a first acknowledgement
+// changes what the page shows by itself, while a repeat has nothing to show
+// except that it changed nothing — which is exactly what an operator who
+// pressed the button on a stale page needs to read.
+func withAckFlag(loc string, already bool) string {
+	if !already {
+		return loc
+	}
+	sep := "?"
+	if strings.Contains(loc, "?") {
+		sep = "&"
+	}
+	return loc + sep + "ack=already"
+}
+
+// ackNote is the sentence a page shows after an acknowledge POST that found
+// the alert already stamped. Anything else in the query string means nothing
+// to say, so a hand-typed ?ack=... stays silent.
+func ackNote(r *http.Request) string {
+	if r.URL.Query().Get("ack") != "already" {
+		return ""
+	}
+	return "This alert was already acknowledged, so nothing changed — acknowledging again is idempotent and the escalation stays stopped."
 }
 
 // setTheme persists the dashboard theme in a cookie and redirects back so
@@ -1746,6 +1795,16 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 			f.Severity = parsed
 		}
 	}
+	// The acknowledgement filter follows the severity control's rule: an
+	// unknown value is dropped rather than rejected, so a link written before
+	// this build existed still lists alerts instead of failing the page.
+	acknowledged := strings.TrimSpace(q.Get("acknowledged"))
+	switch acknowledged {
+	case "acknowledged", "unacknowledged":
+		f.Acknowledged = acknowledged
+	default:
+		acknowledged = ""
+	}
 	switch q.Get("sort") {
 	case "created_at_asc", "created_at_desc":
 		f.Sort = q.Get("sort")
@@ -1822,6 +1881,7 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		"Title": "Alerts", "Alerts": alerts, "Monitors": monitors,
 		"MonitorNames": names, "SelectedMonitor": selected,
 		"SelectedRule": selectedRule, "ContractID": f.ContractID, "Severity": severity, "Sort": sort,
+		"Acknowledged": acknowledged, "AckNote": ackNote(r),
 		"Query": search, "FromDate": fromValue, "ToDate": toValue, "Note": note,
 		// FromRFC/ToRFC are the bounds in the form the live stream compares
 		// against, so a row that arrives for a window the page is not showing
@@ -1831,7 +1891,7 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		// state of the instance, so the page says "no alerts match" instead of
 		// walking the operator through creating a monitor they already have.
 		"HasFilters": selected != 0 || selectedRule != 0 || f.ContractID != "" ||
-			severity != "" || search != "" || !f.From.IsZero() || !f.To.IsZero(),
+			severity != "" || acknowledged != "" || search != "" || !f.From.IsZero() || !f.To.IsZero(),
 		"ExportHref": alertExportHref(f),
 		// The network filter and the per-row network column only appear on a
 		// multi-network instance; with one chain there is nothing to choose
@@ -1896,6 +1956,9 @@ func alertFilterQuery(f store.AlertFilter) string {
 	}
 	if f.Sort != "" && f.Sort != "created_at_desc" {
 		v.Set("sort", f.Sort)
+	}
+	if f.Acknowledged != "" {
+		v.Set("acknowledged", f.Acknowledged)
 	}
 	// The network has to survive paging too: an Older link that dropped it
 	// would widen the page to every chain halfway through a result set.
@@ -2094,11 +2157,60 @@ func (s *Server) alertDetail(w http.ResponseWriter, r *http.Request) {
 		"Rule":           rule,
 		"Attempts":       attempts,
 		"ChannelNames":   channelNames,
+		"AckNote":        ackNote(r),
 		"ContractID":     fields.contractID,
 		"EventName":      fields.eventName,
 		"Ledger":         fields.ledger,
 		"LedgerClosedAt": fields.closedAt,
 	})
+}
+
+// acknowledgeAlert serves POST /alerts/{id}/acknowledge, the dashboard's half
+// of the API's endpoint. The store method it calls is the one the API handler
+// calls: acknowledgement lives in the store, not in either handler, so a
+// dashboard click and a curl cannot disagree about what it means — both stamp
+// the row and stop the escalation through AcknowledgeAlert.
+//
+// The POST redirects back to wherever the button was pressed (the alert page
+// for the detail action, the filtered list for a per-row one) so the rendered
+// state — acknowledged or not, by whom, when — is the answer, and the
+// operator's filters survive the round trip. Acknowledging an alert that is
+// already acknowledged is not an error: the store is idempotent and the
+// escalation stays stopped, so the redirect says that in words instead of
+// leaving the operator to wonder whether the second press did anything. A
+// repeat writes no second audit row — the log records the transition, once.
+func (s *Server) acknowledgeAlert(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	alert, err := s.store.GetAlert(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	already := alert.AcknowledgedAt != nil
+	// Straight through to the store even when this alert is already stamped:
+	// the API handler does exactly the same, and sharing that path is what
+	// makes "acknowledge" one operation with one meaning.
+	if err := s.store.AcknowledgeAlert(r.Context(), id, actor(r)); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	if !already {
+		s.audit(r, store.AuditActionUpdate, "alert", id)
+	}
+	loc := withAckFlag(returnTo(r, "/alerts/"+strconv.FormatInt(id, 10)), already)
+	http.Redirect(w, r, loc, http.StatusSeeOther)
 }
 
 type alertPayloadFields struct {

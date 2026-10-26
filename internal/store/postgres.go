@@ -1704,9 +1704,9 @@ func (p *Postgres) GetAlert(ctx context.Context, id int64) (*Alert, error) {
 	var origin *string
 	var sourceMonitorID, sourceRuleID *int64
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, network, federated, federation_origin, source_monitor_id, source_rule_id
+		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		   FROM alerts WHERE id = $1 AND workspace_id = $2`, id, workspaceID(ctx),
-	).Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
+	).Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.AcknowledgedBy, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -1861,7 +1861,7 @@ func (p *Postgres) DeleteDeadLetter(ctx context.Context, id int64) error {
 // readers call it so the routed and primary-bound forms cannot drift into
 // returning different pages.
 func buildAlertQuery(ctx context.Context, f AlertFilter) (string, []any) {
-	q := `SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, network, federated, federation_origin, source_monitor_id, source_rule_id
+	q := `SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		 FROM alerts WHERE TRUE`
 	args := []any{}
 	n := 0
@@ -1887,6 +1887,12 @@ func buildAlertQuery(ctx context.Context, f AlertFilter) (string, []any) {
 	}
 	if f.Network != "" {
 		q += ` AND network = ` + arg(f.Network)
+	}
+	switch f.Acknowledged {
+	case "acknowledged":
+		q += ` AND acknowledged_at IS NOT NULL`
+	case "unacknowledged":
+		q += ` AND acknowledged_at IS NULL`
 	}
 	if pattern := AlertSearchPattern(f.Query); pattern != "" {
 		// One bound pattern, both columns. The payload is cast to text so the
@@ -1942,7 +1948,7 @@ func scanAlert(row pgx.CollectableRow) (Alert, error) {
 	var monitorID, ruleID *int64
 	var origin *string
 	var sourceMonitorID, sourceRuleID *int64
-	err := row.Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
+	err := row.Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.AcknowledgedBy, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
 	a.Ledger = uint32(ledger)
 	if monitorID != nil {
 		a.MonitorID = *monitorID
@@ -1972,7 +1978,7 @@ func (p *Postgres) ExpiredAlerts(ctx context.Context, cutoff time.Time, limit in
 		limit = DefaultPruneBatch
 	}
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, network, federated, federation_origin, source_monitor_id, source_rule_id
+		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		   FROM alerts WHERE created_at < $1 ORDER BY created_at ASC, id ASC LIMIT $2`,
 		cutoff, limit)
 	if err != nil {
@@ -2597,6 +2603,15 @@ func (p *Postgres) ListAuditEntries(ctx context.Context, f AuditFilter) ([]Audit
 	if !f.To.IsZero() {
 		args = append(args, f.To)
 		where = append(where, fmt.Sprintf("created_at <= $%d", len(args)))
+	}
+	if f.Actor != "" {
+		args = append(args, f.Actor)
+		where = append(where, fmt.Sprintf("actor = $%d", len(args)))
+	}
+	if f.AfterID != 0 {
+		// The listing is id DESC, so the next page holds strictly smaller ids.
+		args = append(args, f.AfterID)
+		where = append(where, fmt.Sprintf("id < $%d", len(args)))
 	}
 	limit := clampAuditLimit(f.Limit)
 	args = append(args, limit)

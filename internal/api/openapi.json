@@ -1871,7 +1871,7 @@
     "/audit": {
       "get": {
         "summary": "Audit log of configuration changes",
-        "description": "Append-only entries for monitor, rule and channel create, update and delete. diff records field names only, never values.",
+        "description": "Append-only entries for monitor, rule and channel create, update and delete, plus alert acknowledgements. diff records field names only, never values.",
         "parameters": [
           {
             "name": "target_type",
@@ -1881,13 +1881,31 @@
               "enum": [
                 "monitor",
                 "rule",
-                "channel"
+                "channel",
+                "alert"
               ]
             }
           },
           {
             "name": "target_id",
             "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Narrow the log to one credential's entries.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The id of the last entry on the previous page; the next page continues below it.",
             "schema": {
               "type": "integer",
               "format": "int64"

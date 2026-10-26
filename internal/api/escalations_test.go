@@ -18,12 +18,13 @@ import (
 // channel lookups the handlers touch.
 type escalationStore struct {
 	store.Store
-	policy        *store.EscalationPolicy
-	channels      map[int64]store.Channel
-	channelInUse  bool
-	acknowledged  bool
-	lastSetSteps  []store.EscalationStep
-	policyDeleted bool
+	policy         *store.EscalationPolicy
+	channels       map[int64]store.Channel
+	channelInUse   bool
+	acknowledged   bool
+	acknowledgedBy string
+	lastSetSteps   []store.EscalationStep
+	policyDeleted  bool
 }
 
 func (e *escalationStore) GetMonitor(context.Context, int64) (*store.Monitor, error) {
@@ -60,8 +61,9 @@ func (e *escalationStore) DeleteEscalationPolicy(context.Context, int64) error {
 	return nil
 }
 
-func (e *escalationStore) AcknowledgeAlert(context.Context, int64) error {
+func (e *escalationStore) AcknowledgeAlert(_ context.Context, _ int64, actor string) error {
 	e.acknowledged = true
+	e.acknowledgedBy = actor
 	return nil
 }
 
@@ -209,6 +211,11 @@ func TestAcknowledgeAlert(t *testing.T) {
 	}
 	if !st.acknowledged {
 		t.Fatal("alert was not acknowledged")
+	}
+	// The row records who acknowledged it: this request's credential label
+	// or, for an unnamed credential, its request id — never blank.
+	if st.acknowledgedBy == "" {
+		t.Fatal("acknowledgement recorded no actor")
 	}
 	if body["acknowledged_at"] == nil {
 		t.Fatalf("acknowledged_at missing from response: %v", body)

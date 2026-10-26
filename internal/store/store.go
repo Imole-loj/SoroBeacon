@@ -446,6 +446,13 @@ type Alert struct {
 	// has not been acknowledged, so an escalation attached to it keeps
 	// running. Acknowledging stops escalation.
 	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	// AcknowledgedBy names the credential that acknowledged the alert: the
+	// token's label when the credential carries one, otherwise the request
+	// id — the same value the acknowledgement's audit row records, so the two
+	// can be tied together. Empty means nobody has acknowledged it, or that
+	// it was acknowledged before this column existed; AcknowledgedAt is the
+	// authority on the latter question.
+	AcknowledgedBy string `json:"acknowledged_by,omitempty"`
 	// Federated marks an alert another SoroBeacon instance forwarded. Such an
 	// alert belongs to no local monitor and no local rule: the ids in the
 	// payload are the sending instance's, and writing them against this
@@ -759,6 +766,12 @@ type AlertFilter struct {
 	// Network filters alerts by the Stellar network their event came from.
 	// Empty means every network.
 	Network string
+	// Acknowledged filters on acknowledgement state: "acknowledged" keeps
+	// only stamped alerts, "unacknowledged" only the rest, and any other
+	// value (the empty string included) is no filter — the same "unknown is
+	// the default" rule Sort follows, so a caller that has never heard of the
+	// filter lists everything it used to.
+	Acknowledged string
 }
 
 // MaxAlertSearchLen caps a ?q= search term. The term is always bound as a
@@ -1232,6 +1245,13 @@ type AuditFilter struct {
 	From       time.Time
 	To         time.Time
 	Limit      int
+	// Actor narrows the log to one credential's entries. Empty means every
+	// actor.
+	Actor string
+	// AfterID is the keyset cursor: the id of the last entry on the previous
+	// page, so the next page continues downwards from it. The listing is id
+	// DESC, hence the strict less-than. Zero means the first page.
+	AfterID int64
 }
 
 // Digest modes persisted on channels.digest_mode. The empty string means
@@ -1361,7 +1381,10 @@ type Escalations interface {
 	// CompleteEscalation clears a pending escalation once all steps have fired.
 	CompleteEscalation(ctx context.Context, alertID int64) error
 	// AcknowledgeAlert stamps an alert acknowledged and stops its escalation.
-	AcknowledgeAlert(ctx context.Context, alertID int64) error
+	// actor names the credential that acknowledged it and is stored on the
+	// row (see Alert.AcknowledgedBy); it is recorded verbatim, so a caller
+	// passes a label or request id, never a raw credential.
+	AcknowledgeAlert(ctx context.Context, alertID int64, actor string) error
 }
 
 // Workspaces persists the tenant list. EnsureWorkspace is idempotent so

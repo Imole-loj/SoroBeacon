@@ -115,7 +115,7 @@ func TestEscalationSchedulingAndAcknowledgement(t *testing.T) {
 
 	// Acknowledging stops the escalation even though it is due again.
 	require.NoError(t, st.AdvanceEscalation(ctx, alert.ID, 1, due))
-	require.NoError(t, st.AcknowledgeAlert(ctx, alert.ID))
+	require.NoError(t, st.AcknowledgeAlert(ctx, alert.ID, "ops-bot"))
 	runs, err = st.DueEscalations(ctx, time.Now(), 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs, "an acknowledged alert must not escalate")
@@ -123,8 +123,14 @@ func TestEscalationSchedulingAndAcknowledgement(t *testing.T) {
 	got, err := st.GetAlert(ctx, alert.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.AcknowledgedAt)
+	assert.Equal(t, "ops-bot", got.AcknowledgedBy, "the alert records who acknowledged it")
 
-	// Idempotent, and a missing alert is not found.
-	require.NoError(t, st.AcknowledgeAlert(ctx, alert.ID))
-	require.ErrorIs(t, st.AcknowledgeAlert(ctx, alert.ID+9999), ErrNotFound)
+	// Idempotent, and a missing alert is not found. The second pass carries a
+	// different actor on purpose: re-acknowledging must not rewrite who got
+	// there first.
+	require.NoError(t, st.AcknowledgeAlert(ctx, alert.ID, "someone-else"))
+	again, err := st.GetAlert(ctx, alert.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "ops-bot", again.AcknowledgedBy, "a repeat acknowledgement keeps the first actor")
+	require.ErrorIs(t, st.AcknowledgeAlert(ctx, alert.ID+9999, "ops-bot"), ErrNotFound)
 }

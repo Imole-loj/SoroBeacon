@@ -14,9 +14,22 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sorotrail/sorobeacon/internal/auth"
 	"github.com/sorotrail/sorobeacon/internal/reqid"
 	"github.com/sorotrail/sorobeacon/internal/store"
 )
+
+// actor is who a mutating request is recorded as: the credential's label when
+// it carries one (a database token does, and the label is chosen so it can be
+// shown without leaking the credential), and the request id otherwise — the
+// same value the log line and the audit entry carry, so an entry written by an
+// unnamed credential still traces back to the request that wrote it.
+func actor(r *http.Request) string {
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok && p.Name != "" {
+		return p.Name
+	}
+	return reqid.From(r)
+}
 
 // auditBodyCapture bounds how much of a create response is kept so the new
 // row's id can be read off it. A JSON body is small; anything larger is not a
@@ -241,7 +254,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	f := store.AuditFilter{TargetType: strings.TrimSpace(q.Get("target_type"))}
 	if f.TargetType != "" {
 		switch f.TargetType {
-		case "monitor", "rule", "channel":
+		case "monitor", "rule", "channel", "alert":
 		default:
 			writeErr(w, r, http.StatusBadRequest, "invalid target_type")
 			return
@@ -278,6 +291,15 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.Limit = n
+	}
+	f.Actor = strings.TrimSpace(q.Get("actor"))
+	if v := q.Get("cursor"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id < 1 {
+			writeErr(w, r, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		f.AfterID = id
 	}
 	entries, err := s.store.ListAuditEntries(r.Context(), f)
 	if err != nil {

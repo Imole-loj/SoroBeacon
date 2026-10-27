@@ -199,7 +199,14 @@ func TestPostgresAlertListingUsesIndexes(t *testing.T) {
 		require.NoError(t, err)
 		wantAsc, err = pgx.CollectRows(rows, pgx.RowTo[int64])
 		require.NoError(t, err)
-		require.Greater(t, len(wantDesc), 3*page, "the walk should page several times, or it proves nothing")
+		// One monitor owns alertsPerMonitor seeded alerts, a quarter of them
+		// in the other workspace, so its tenant-scoped listing is three
+		// quarters of that: exactly three pages of `page` rows. The guard
+		// sits on that boundary rather than above it — three full pages and
+		// the terminating empty request are the least the walk can do and
+		// still prove it pages — and it stays strict enough to catch a seed
+		// that shrank to a single page.
+		require.GreaterOrEqual(t, len(wantDesc), 3*page, "the walk should page several times, or it proves nothing")
 
 		pageAll := func(f AlertFilter) []int64 {
 			t.Helper()

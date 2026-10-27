@@ -66,6 +66,7 @@
 * [Poll priority, reorgs, retention and archiving](operations/retention-and-reorg.md)
 * [Alert retention and partitioning](operations/retention.md)
 * [Diagnosing failed alert deliveries](operations/delivery-failures.md)
+* [SLOs and alert library](operations/slos-and-alerts.md)
 
 ## 🛠️ Reference
 

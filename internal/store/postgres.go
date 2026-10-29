@@ -345,7 +345,7 @@ func (p *Postgres) monitorChannelIDs(ctx context.Context, monitorID int64) ([]in
 func (p *Postgres) ListMonitors(ctx context.Context, enabledOnly bool) ([]Monitor, error) {
 	var out []Monitor
 	err := p.read(ctx, func(ctx context.Context) error {
-		q := `SELECT id, name, contract_ids, enabled, created_at, last_matched_at, priority, network, deleted_at FROM monitors WHERE deleted_at IS NULL`
+		q := `SELECT id, name, contract_ids, tags, enabled, created_at, last_matched_at, priority, network, deleted_at FROM monitors WHERE deleted_at IS NULL`
 		args := []any{}
 		ws, scoped := tenantWorkspace(ctx)
 		if scoped {

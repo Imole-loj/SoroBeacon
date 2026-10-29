@@ -132,7 +132,10 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 	if nerr != nil {
 		details = append(details, *nerr)
 	}
-	var tags []string
+	// A create without a tags field stores an explicit empty list rather than
+	// nil, so the row round-trips as `[]` and no reader has to special-case a
+	// monitor that never carried tags.
+	tags := []string{}
 	if req.Tags != nil {
 		var terr *FieldError
 		tags, terr = tagsDetail(*req.Tags)

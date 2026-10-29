@@ -78,17 +78,21 @@ func TestResumeInsideRetentionRecordsNoGap(t *testing.T) {
 // global checkpoint can be current while an individual contract cursor —
 // written before the outage — still points into forgotten history. The
 // cursor must be clamped to the same boundary or the fetch would still ask
-// for ledgers the source cannot serve.
+// for ledgers the source cannot serve. The fetch itself fails, the way it
+// does whenever a source has forgotten the range: that is what lets the test
+// read back the clamped position instead of the ledger a completed page
+// would have advanced it to.
 func TestRetentionClampsStaleContractCursor(t *testing.T) {
 	ctx := context.Background()
-	rpc := &fakeRPC{latest: 6100, oldest: 6000}
+	rpc := &errorRPC{latest: 6100, oldest: 6000}
 	st := newFakeStore()
 	st.state.LastLedger = 6050 // inside the window: the checkpoint is fine
 	seedMonitor(st, `{"event_name": "transfer"}`)
 	require.NoError(t, st.InitializeContractCursor(ctx, "", contractA, 1000))
 	p := newResumePoller(rpc, st, &fakeDispatcher{})
 
-	require.NoError(t, p.Poll(ctx))
+	require.ErrorIs(t, p.Poll(ctx), errSourceDown,
+		"the source cannot serve the clamped range, which is why the clamp matters")
 
 	require.Empty(t, st.retentionGaps, "the checkpoint is inside the window, so there is no gap to record")
 	require.Len(t, rpc.requests, 1)

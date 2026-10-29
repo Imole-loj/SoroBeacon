@@ -70,6 +70,8 @@ var transferTables = []transferTable{
 	{name: "network_ingest_state", key: []string{"network"}},
 	{name: "network_ledger_hashes", key: []string{"network", "ledger"}},
 	{name: "contract_ingest_cursors", key: []string{"network", "contract_id"}},
+	{name: "retention_gaps", key: []string{"id"}},
+	{name: "event_archive", key: []string{"id"}},
 	{name: "backfills", key: []string{"monitor_id"}},
 	{name: "maintenance_windows", key: []string{"id"}},
 	{name: "rule_absence_state", key: []string{"rule_id", "event_name"}},

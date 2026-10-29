@@ -97,6 +97,14 @@ var channelConformanceFixtures = map[string]channelConformanceFixture{
 			}, "template", customTpl)
 		},
 	},
+	TypeTeams: {
+		supportsTemplate: true,
+		buildConfig: func(endpoint, secret, customTpl string) json.RawMessage {
+			return withTemplateField(map[string]any{
+				"webhook_url": endpoint + "/webhookb2/" + secret,
+			}, "template", customTpl)
+		},
+	},
 	TypeTelegram: {
 		supportsTemplate: true,
 		buildConfig: func(endpoint, secret, customTpl string) json.RawMessage {

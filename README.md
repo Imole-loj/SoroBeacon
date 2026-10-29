@@ -99,6 +99,7 @@ vs optional, secrets, and `SOURCE_MODE`-only notes — is
 | `HTTP_MAX_BODY_BYTES` | `1048576` (1 MiB)                 | Max API write-body size; GET is unaffected   |
 | `CORS_ALLOWED_ORIGINS` | _(empty, CORS off)_             | Comma-separated browser Origins; empty disables CORS |
 | `MONITOR_SILENT_AFTER` | `24h`                            | Mark monitors silent on the dashboard after this much time since last match |
+| `SHUTDOWN_GRACE_PERIOD` | `30s`                           | How long to wait for in-flight alert deliveries to finish on shutdown before they are persisted as retries |
 | `ALERT_RETENTION` | _(unset, keep forever)_             | How long to keep alerts; `90d`, `24h`. Postgres drops whole expired partitions |
 | `ALERT_ENRICHMENT_URL` | _(unset, off)_                  | HTTP JSON endpoint called on every alert to attach operator context; see the [enrichment guide](docs/guides/alert-enrichment.md) |
 | `ALERT_ENRICHMENT_TIMEOUT` | `2s`                        | Budget for one enrichment call; slow service costs the enrichment, not the alert |
@@ -108,6 +109,7 @@ vs optional, secrets, and `SOURCE_MODE`-only notes — is
 | `REORG_CONFIRMATION_DEPTH` | `0`                       | Ledgers an event must be buried before it may alert |
 | `LOG_LEVEL`     | `info`                                 | `debug` \| `info` \| `warn` \| `error`       |
 | `READYZ_LAG_THRESHOLD` | `0` (disabled)                  | Fail `/readyz` when poller ledger lag exceeds this; 0 leaves probes unchanged |
+| `HEARTBEAT_URL` | _(unset, off)_                   | External dead-man's switch: while ingest is healthy the leader pings this URL and the external service alerts when the pings stop. Never logged. |
 | `RATE_LIMIT_RPS` | `0` (off)                             | Per-client API requests per second           |
 | `RATE_LIMIT_BURST` | `ceil(RPS)` when enabled            | Per-client token-bucket size                 |
 | `RATE_LIMIT_TRUST_FORWARDED` | `false`                  | Key clients by `X-Forwarded-For` (proxy only) |

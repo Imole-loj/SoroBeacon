@@ -1725,9 +1725,9 @@ func (p *Postgres) GetAlert(ctx context.Context, id int64) (*Alert, error) {
 	var origin *string
 	var sourceMonitorID, sourceRuleID *int64
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, network, federated, federation_origin, source_monitor_id, source_rule_id
+		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		   FROM alerts WHERE id = $1 AND workspace_id = $2`, id, workspaceID(ctx),
-	).Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
+	).Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.AcknowledgedBy, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -1882,7 +1882,7 @@ func (p *Postgres) DeleteDeadLetter(ctx context.Context, id int64) error {
 // readers call it so the routed and primary-bound forms cannot drift into
 // returning different pages.
 func buildAlertQuery(ctx context.Context, f AlertFilter) (string, []any) {
-	q := `SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, network, federated, federation_origin, source_monitor_id, source_rule_id
+	q := `SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		 FROM alerts WHERE TRUE`
 	args := []any{}
 	n := 0
@@ -1908,6 +1908,12 @@ func buildAlertQuery(ctx context.Context, f AlertFilter) (string, []any) {
 	}
 	if f.Network != "" {
 		q += ` AND network = ` + arg(f.Network)
+	}
+	switch f.Acknowledged {
+	case "acknowledged":
+		q += ` AND acknowledged_at IS NOT NULL`
+	case "unacknowledged":
+		q += ` AND acknowledged_at IS NULL`
 	}
 	if pattern := AlertSearchPattern(f.Query); pattern != "" {
 		// One bound pattern, both columns. The payload is cast to text so the
@@ -1963,7 +1969,7 @@ func scanAlert(row pgx.CollectableRow) (Alert, error) {
 	var monitorID, ruleID *int64
 	var origin *string
 	var sourceMonitorID, sourceRuleID *int64
-	err := row.Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
+	err := row.Scan(&a.ID, &monitorID, &ruleID, &a.EventID, &a.Payload, &a.Enrichment, &a.CreatedAt, &ledger, &a.RetractedAt, &a.Backfilled, &a.InhibitedByRuleID, &a.Suppressed, &a.SuppressionReason, &a.AcknowledgedAt, &a.AcknowledgedBy, &a.Network, &a.Federated, &origin, &sourceMonitorID, &sourceRuleID)
 	a.Ledger = uint32(ledger)
 	if monitorID != nil {
 		a.MonitorID = *monitorID
@@ -1993,7 +1999,7 @@ func (p *Postgres) ExpiredAlerts(ctx context.Context, cutoff time.Time, limit in
 		limit = DefaultPruneBatch
 	}
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, network, federated, federation_origin, source_monitor_id, source_rule_id
+		`SELECT id, monitor_id, rule_id, event_id, payload, enrichment, created_at, ledger, retracted_at, backfilled, inhibited_by_rule_id, suppressed, suppression_reason, acknowledged_at, acknowledged_by, network, federated, federation_origin, source_monitor_id, source_rule_id
 		   FROM alerts WHERE created_at < $1 ORDER BY created_at ASC, id ASC LIMIT $2`,
 		cutoff, limit)
 	if err != nil {
@@ -2126,18 +2132,7 @@ func (p *Postgres) RecordDeliveryAttempt(ctx context.Context, d *DeliveryAttempt
 // can see the alert behind it. The join includes created_at because that pair
 // is the alerts primary key once the table is partitioned.
 func (p *Postgres) ListDeliveryAttempts(ctx context.Context, alertID int64, status string) ([]DeliveryAttempt, error) {
-	q := `SELECT da.id, da.alert_id, da.channel_id, da.status, da.response_snippet, da.attempted_at
-		 FROM delivery_attempts da
-		 JOIN alerts a ON a.id = da.alert_id AND a.created_at = da.alert_created_at
-		 WHERE da.alert_id = $1 AND a.workspace_id = $2`
-	args := []any{alertID, workspaceID(ctx)}
-	if status != "" {
-		// Applied in SQL so a busy alert does not ship every attempt just
-		// so the client can throw most of them away.
-		q += ` AND da.status = $3`
-		args = append(args, status)
-	}
-	q += ` ORDER BY da.id`
+	q, args := buildDeliveryAttemptsQuery(alertID, status, workspaceID(ctx))
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -2147,6 +2142,26 @@ func (p *Postgres) ListDeliveryAttempts(ctx context.Context, alertID int64, stat
 		err := row.Scan(&d.ID, &d.AlertID, &d.ChannelID, &d.Status, &d.ResponseSnippet, &d.AttemptedAt)
 		return d, err
 	})
+}
+
+// buildDeliveryAttemptsQuery builds the ListDeliveryAttempts statement and
+// its arguments. The listing and the EXPLAIN regression test over it
+// (alert_indexes_test.go) both call this, so the plan the test pins is the
+// plan the dashboard actually runs.
+func buildDeliveryAttemptsQuery(alertID int64, status string, ws workspace.ID) (string, []any) {
+	q := `SELECT da.id, da.alert_id, da.channel_id, da.status, da.response_snippet, da.attempted_at
+		 FROM delivery_attempts da
+		 JOIN alerts a ON a.id = da.alert_id AND a.created_at = da.alert_created_at
+		 WHERE da.alert_id = $1 AND a.workspace_id = $2`
+	args := []any{alertID, ws}
+	if status != "" {
+		// Applied in SQL so a busy alert does not ship every attempt just
+		// so the client can throw most of them away.
+		q += ` AND da.status = $3`
+		args = append(args, status)
+	}
+	q += ` ORDER BY da.id`
+	return q, args
 }
 
 // --- maintenance windows ---
@@ -2776,6 +2791,15 @@ func (p *Postgres) ListAuditEntries(ctx context.Context, f AuditFilter) ([]Audit
 	if !f.To.IsZero() {
 		args = append(args, f.To)
 		where = append(where, fmt.Sprintf("created_at <= $%d", len(args)))
+	}
+	if f.Actor != "" {
+		args = append(args, f.Actor)
+		where = append(where, fmt.Sprintf("actor = $%d", len(args)))
+	}
+	if f.AfterID != 0 {
+		// The listing is id DESC, so the next page holds strictly smaller ids.
+		args = append(args, f.AfterID)
+		where = append(where, fmt.Sprintf("id < $%d", len(args)))
 	}
 	limit := clampAuditLimit(f.Limit)
 	args = append(args, limit)

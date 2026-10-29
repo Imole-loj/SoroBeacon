@@ -209,7 +209,13 @@ func (p *Postgres) CompleteEscalation(ctx context.Context, alertID int64) error 
 // ErrNotFound rather than an acknowledgement that stops its paging. The
 // escalation row has no workspace of its own; it is only reached once the
 // scoped alert update has found a row in this workspace.
-func (p *Postgres) AcknowledgeAlert(ctx context.Context, alertID int64) error {
+//
+// actor is stored beside the timestamp (the column 0034 adds) but is not a
+// condition of the update: re-acknowledging an already-acknowledged alert
+// still finds the row and still stops any escalation still running, while
+// leaving the original actor and time in place rather than rewriting who
+// acknowledged it first.
+func (p *Postgres) AcknowledgeAlert(ctx context.Context, alertID int64, actor string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -218,7 +224,8 @@ func (p *Postgres) AcknowledgeAlert(ctx context.Context, alertID int64) error {
 
 	ws := workspaceID(ctx)
 	tag, err := tx.Exec(ctx,
-		`UPDATE alerts SET acknowledged_at = now() WHERE id = $1 AND workspace_id = $2 AND acknowledged_at IS NULL`, alertID, ws)
+		`UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $3
+		 WHERE id = $1 AND workspace_id = $2 AND acknowledged_at IS NULL`, alertID, ws, actor)
 	if err != nil {
 		return err
 	}

@@ -249,7 +249,13 @@ func (s *SQLite) CompleteEscalation(ctx context.Context, alertID int64) error {
 // ErrNotFound rather than an acknowledgement that stops its paging. The
 // escalation row has no workspace of its own; it is only reached once the
 // scoped alert update has found a row in this workspace.
-func (s *SQLite) AcknowledgeAlert(ctx context.Context, alertID int64) error {
+//
+// actor is stored beside the timestamp (the column 0034 adds) but is not a
+// condition of the update: re-acknowledging an already-acknowledged alert
+// still finds the row and still stops any escalation still running, while
+// leaving the original actor and time in place rather than rewriting who
+// acknowledged it first.
+func (s *SQLite) AcknowledgeAlert(ctx context.Context, alertID int64, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -259,7 +265,8 @@ func (s *SQLite) AcknowledgeAlert(ctx context.Context, alertID int64) error {
 	now := sqliteTimeString(time.Now())
 	ws := workspaceID(ctx)
 	res, err := tx.ExecContext(ctx,
-		`UPDATE alerts SET acknowledged_at = ? WHERE id = ? AND workspace_id = ? AND acknowledged_at IS NULL`, now, alertID, ws)
+		`UPDATE alerts SET acknowledged_at = ?, acknowledged_by = ?
+		 WHERE id = ? AND workspace_id = ? AND acknowledged_at IS NULL`, now, actor, alertID, ws)
 	if err != nil {
 		return err
 	}

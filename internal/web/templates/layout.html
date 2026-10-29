@@ -143,6 +143,7 @@
   <a href="/alerts" {{if eq .Active "alerts"}}class="active"{{end}}>Alerts</a>
   <a href="/maintenance" {{if eq .Active "maintenance"}}class="active"{{end}}>Maintenance</a>
   <a href="/tokens" {{if eq .Active "tokens"}}class="active"{{end}}>Tokens</a>
+  {{if .CanAdmin}}<a href="/audit" {{if eq .Active "audit"}}class="active"{{end}}>Audit</a>{{end}}
   <form class="theme" method="post" action="/theme">
     <label>Theme
       <select name="theme" aria-label="Theme" onchange="this.form.submit()">

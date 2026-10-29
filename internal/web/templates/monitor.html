@@ -13,6 +13,7 @@
   <button>Duplicate</button>
 </form>
 <p class="muted">Duplicate copies rules and channel attachments under a new name, created disabled so it cannot alert until reviewed.</p>
+{{if .CanAdmin}}<p><a href="/audit?target_type=monitor&target_id={{.Monitor.ID}}">Change history for this monitor &rarr;</a></p>{{end}}
 
 <h2>Activity</h2>
 {{if .Stats.Alerts}}
@@ -78,6 +79,7 @@
     <td>
       <form class="inline" method="post" action="/monitors/{{$.Monitor.ID}}/rules/{{.ID}}/toggle"><button>{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form>
       <form class="inline" method="post" action="/monitors/{{$.Monitor.ID}}/rules/{{.ID}}/delete"><button>Delete</button></form>
+      {{if $.CanAdmin}}<a href="/audit?target_type=rule&target_id={{.ID}}">History</a>{{end}}
     </td>
   </tr>
   {{end}}

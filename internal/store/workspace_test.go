@@ -193,11 +193,11 @@ func testWorkspaceIsolation(t *testing.T, newStore conformanceFactory) {
 
 	// Acknowledging stops escalation, so a cross-tenant id must be refused
 	// before the write rather than acknowledged and then reported missing.
-	assert.ErrorIs(t, st.AcknowledgeAlert(beta, acmeAlert.ID), ErrNotFound, "another tenant's alert cannot be acknowledged")
+	assert.ErrorIs(t, st.AcknowledgeAlert(beta, acmeAlert.ID, "beta-op"), ErrNotFound, "another tenant's alert cannot be acknowledged")
 	unacked, err := st.GetAlert(acme, acmeAlert.ID)
 	require.NoError(t, err)
 	assert.Nil(t, unacked.AcknowledgedAt, "the refused acknowledgement must leave the alert alone")
-	require.NoError(t, st.AcknowledgeAlert(acme, acmeAlert.ID), "the owner can still acknowledge it")
+	require.NoError(t, st.AcknowledgeAlert(acme, acmeAlert.ID, "acme-op"), "the owner can still acknowledge it")
 
 	// Delivery attempts are scoped through their alert.
 	require.NoError(t, st.RecordDeliveryAttempt(system, &DeliveryAttempt{
@@ -395,6 +395,8 @@ var unscopedStoreMethods = map[string]string{
 	"MarkAlertInhibited":                 "the dispatcher marks an alert it already resolved, in the poller's cross-tenant context",
 	"SetAlertSuppressed":                 "the dispatcher marks an alert it already resolved, in the poller's cross-tenant context",
 	"RuleFiredWithin":                    "the inhibition check asks about one rule the dispatcher already resolved; rule_id implies the tenant",
+	"transferAlertTimeRange":             "the SQLite/Postgres transfer spans every workspace: it reads the copied alerts' created_at range to size the target's partitions before any row arrives",
+	"transferDeriveTable":                "the SQLite/Postgres transfer spans every workspace: it rebuilds alert_dedup from the alerts the transfer just copied",
 }
 
 // sqlSourceFiles lists every non-test Go source in the package directory.

@@ -182,7 +182,7 @@ func TestEscalationStopsOnAcknowledge(t *testing.T) {
 	d.Dispatch(ctx, Alert{ID: alertID, MonitorID: monitorID})
 	require.Equal(t, []int64{chA}, attemptChannelIDs(t, st, ctx, alertID))
 
-	require.NoError(t, st.AcknowledgeAlert(ctx, alertID))
+	require.NoError(t, st.AcknowledgeAlert(ctx, alertID, "oncall"))
 
 	n, err := d.ProcessDueEscalations(ctx, time.Now().Add(2*time.Minute))
 	require.NoError(t, err)

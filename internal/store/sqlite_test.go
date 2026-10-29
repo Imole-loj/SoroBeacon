@@ -89,6 +89,12 @@ func (s *SQLite) rawChannelConfig(ctx context.Context, id int64) ([]byte, error)
 
 func (s *SQLite) setCipher(c ConfigCipher) { s.cipher = c }
 
+func (s *SQLite) setEventArchiveIngestedAt(ctx context.Context, eventID string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE event_archive SET ingested_at = ? WHERE event_id = ?`, sqliteTimeString(at), eventID)
+	return err
+}
+
 // --- SQLite-specific behaviour ---
 
 func TestSQLiteFilePath(t *testing.T) {

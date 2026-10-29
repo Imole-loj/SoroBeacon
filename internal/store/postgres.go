@@ -2434,7 +2434,8 @@ func (p *Postgres) SetIngestState(ctx context.Context, network string, s IngestS
 			`UPDATE ingest_state SET last_ledger = $1, last_cursor = $2, updated_at = now() WHERE id = 1`,
 			int64(s.LastLedger), s.LastCursor)
 		return err
-	}	_, err := p.pool.Exec(ctx,
+	}
+	_, err := p.pool.Exec(ctx,
 		`INSERT INTO network_ingest_state (network, last_ledger, last_cursor, updated_at)
 		VALUES ($1, $2, $3, now())
 		ON CONFLICT (network) DO UPDATE

@@ -680,7 +680,7 @@ type IngestState struct {
 
 // RetentionGap is one recorded hole in ingest history: the checkpoint had
 // fallen outside the source's retention window, so ledgers
-[FromLedger, ToLedger] can never be read. It is persisted rather than only
+// [FromLedger, ToLedger] can never be read. It is persisted rather than only
 // logged so the gap survives restarts and can be surfaced to operators —
 // silent data loss is the failure this record exists to prevent.
 type RetentionGap struct {

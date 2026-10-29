@@ -3120,9 +3120,11 @@ func scanSQLiteArchivedEvent(r rowScanner) (ArchivedEvent, error) {
 	}
 	var err error
 	if closed.Valid && closed.String != "" {
-		if ev.LedgerClosedAt, err = parseSQLiteTime(closed.String); err != nil {
-			return ArchivedEvent{}, err
+		closedAt, perr := parseSQLiteTime(closed.String)
+		if perr != nil {
+			return ArchivedEvent{}, perr
 		}
+		ev.LedgerClosedAt = &closedAt
 	}
 	if ev.IngestedAt, err = parseSQLiteTime(ingested); err != nil {
 		return ArchivedEvent{}, err
